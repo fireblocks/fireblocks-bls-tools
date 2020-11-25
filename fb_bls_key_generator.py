@@ -62,13 +62,19 @@ def main():
     parser.add_argument("-t", "--threshold", type=int, help="minimal number of shares able to reconstruct private key")
     args = parser.parse_args()
     
-    # Set party for each RSA key file (allows duplicate, will get different shares+id)
-    
+    # Set party ids for each RSA key file (allows duplicate, will get different shares+id)
+    # ids shouldn't be more then 255 bits
+    parties = dict()
+    id = 1
     for f in args.RSA_keys:
         if not os.path.exists(f): 
             print(f'RSA key: {f} not found.')
             exit(-1)
-    num_parties = len(args.RSA_keys)
+        # TODO: open and read rsa_key from file
+        parties[id] = f
+        id += 1
+        
+    num_parties = len(parties)
 
     # If no threshold arg, set all parties
     threshold = num_parties
@@ -79,7 +85,7 @@ def main():
             exit(-1)
 
     try:
-        bls_pubkey, verification_data = generate.sample_bs12381_shares_with_verificaion(args.RSA_keys, threshold)
+        bls_pubkey = generate.sample_bs12381_shares_with_verificaion(parties, threshold)
     except ValueError:
         print("ValueError")
 

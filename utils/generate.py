@@ -24,13 +24,14 @@ pp = pprint.PrettyPrinter(indent=2)
 #curve_order = 7
 # Raise error if randomness is too short
 def sample_random_in_curve_order():
+    #TODO change to KeyGen with checking minimal
     val = SystemRandom().randrange(curve_order)
     if (val <= (curve_order >> 32)):
         # TODO: ErrorFishyRandomness
         return 0 
     return val
 
-def share_value(value: int, ids: Sequence[int], threshold: int):
+def sample_shares(ids: Sequence[int], threshold: int):
     
     # TODO: check ids are unique and non-zero
     
@@ -40,9 +41,9 @@ def share_value(value: int, ids: Sequence[int], threshold: int):
     
     # Sample polyomial coeffcients of degree threshold-1
     poly_coeff = [0] * threshold
-    poly_coeff[0] = value
-    for i in range(1, threshold):
+    for i in range(0, threshold):
         poly_coeff[i] = sample_random_in_curve_order()
+        print(f'a_{i} = {poly_coeff[i]}')
 
     # Evaluate (horner's method) on each id
     shares = {id : poly_coeff[threshold-1] for id in ids}
@@ -52,26 +53,31 @@ def share_value(value: int, ids: Sequence[int], threshold: int):
 
     return shares
 
+#TODO encrypt_private_root_share
+#TODO derive_private_at_path
+#TODO interpolate_public
+#TODO public_to_address
+
 # parties: dict{ party_id : RSA_pub_file }
-def sample_bs12381_shares_with_verificaion(rsa_keys, threshold):
-    print(rsa_keys)
+def sample_bs12381_shares_with_verificaion(parties, threshold, verification_file):
+    print(parties)
     print(threshold)
     print(curve_order)
 
-    parties = dict()
-    id = 1
-    for f in rsa_keys:
-        # TODO: open and read rsa_key from file
-        rsa_key = 1
-        parties[id] = rsa_key
-        id += 1
-
-    # Generate root private key and shares for ids
-
-    root_private_key = sample_random_in_curve_order()
-    print(f'root_priavte_key = {root_private_key}')
-    shares = share_value(root_private_key, parties.keys(), threshold)
-
+    shares = sample_shares(parties.keys(), threshold)
     pp.pprint(shares)
 
-    return None, None
+    #TODO encrypt root shares (with id)
+    #TODO compute pubkey and sign msg shares (pubkey+dummy)
+    #TODO for every auth group, verify same public key, join and verify signature against it
+    
+    #TODO write to file: public key (maybe address), ids, public shares and their signing shares of msg
+    #TODO return address
+
+    return None
+
+#TODO verify_data(address, verification_file_list, RSA_key_file, bls_key_share_file)
+    #TODO read all data in verification files (values, check same data: threshold, signature_share, public)
+    #TODO verify my decrypted key corresponds to public one verification (if exists, if not, add)
+    #TODO verify signing with key gives signed share (if exists - if not, add)
+    #TODO for every auth group, verify same pubkey and address, join and verify signature against it
