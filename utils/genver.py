@@ -1,26 +1,42 @@
 from py_ecc.bls import G2ProofOfPossession as bls_pop
 from py_ecc.bls import G2Basic as bls_basic
-
 import py_ecc.optimized_bls12_381 as bls_opt
-
-# (
-#     add,
-    
-#     final_exponentiate,
-#     G1,
-#     multiply,
-#     neg,
-#     pairing,
-#     Z1,
-#     Z2,
-# )
 
 from typing import Sequence, Dict
 from random import SystemRandom
-import itertools
+from Crypto.PublicKey import RSA
 
+import os
+import itertools
+from datetime import datetime
 import pprint
+
+from Crypto.Cipher import PKCS1_OAEP
 pp = pprint.PrettyPrinter(indent=2)
+
+# Error Handling 
+
+class GenVerErrorInvalidPublicKeyReconstructed(Exception):
+    def __init__(self, auth_ids):
+        self._auth_ids = auth_ids
+
+    def __str__(self):
+        return f'ERROR: Invalid public key for parties {self._auth_ids}'
+
+class GenVerErrorRSAKeyImport(Exception):
+    def __init__(self, key_file):
+        self._key_file = key_file
+
+    def __str__(self):
+        return f'ERROR: Reading RSA public key file: {self._key_file}'
+
+class GenVerErrorRSAEncryption(Exception):
+    def __init__(self, msg):
+        self._msg = msg
+
+    def __str__(self):
+        return f'ERROR: {self._msg}'
+
 
 #bls_opt.curve_order = 7
 # Raise error if randomness is too short
@@ -84,12 +100,12 @@ def interpolate_public(public_shares: Dict[int,tuple]):
 #TODO public_to_address
 
 # parties: dict{ party_id : RSA_pub_file }
-def sample_bs12381_shares_with_verificaion(parties:Dict[int,str], threshold:int, verification_file:str = None):
-    print(parties)
+def sample_bs12381_shares_with_verificaion(rsa_key_files:Dict[int,str], threshold:int, verification_file:str = None):
+    print(rsa_key_files)
     print(threshold)
     print(bls_opt.curve_order)
 
-    ids = list(parties.keys())
+    ids = list(rsa_key_files.keys())
     
     private_shares = sample_shares(ids, threshold, bls_opt.curve_order)
     pp.pprint(private_shares)
@@ -105,8 +121,27 @@ def sample_bs12381_shares_with_verificaion(parties:Dict[int,str], threshold:int,
         curr_public_key = interpolate_public({id : public_shares[id] for id in auth_ids})
         print(curr_public_key)
         if not bls_opt.eq(public_key, curr_public_key):
-            print(f'Incorrect public key for ids {auth_ids}')
-            return
+            raise GenVerErrorInvalidPublicKeyReconstructed(auth_ids)
+    
+    now_date_time = datetime.now().strftime("%Y_%d_%m_%H_%M_%S")
+    for id, rsa_key_file in rsa_key_files.items():
+        try:
+            rsa_key = RSA.importKey(open(rsa_key_file, 'r').read())
+        except ValueError:
+            raise GenVerErrorRSAKeyImport(rsa_key_file)
+        try:
+            cipher = PKCS1_OAEP.new(rsa_key)
+            ciphertext = cipher.encrypt(private_shares[id].to_bytes(32, byteorder="big"))
+            out_filename = f'bls_private_key_share_id_{id}.rsa_enc_{now_date_time}'
+            if os.path.exists(out_filename):
+                raise GenVerErrorRSAEncryption(f'Existing file {out_filename}')
+            out_file = open(out_filename, "w+")
+            out_file.write(f'{id}\n')
+            out_file.write(f'{ciphertext.hex()}\n')
+            out_file.close()
+        except ValueError:
+            raise GenVerErrorRSAEncryption(f'Error writing encrypted private key share for id {id}')
+    import math
         
     #TODO encrypt root shares (with id)
     

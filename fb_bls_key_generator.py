@@ -10,7 +10,7 @@ import sys
 from termcolor import colored
 
 from utils import recover
-from utils import generate
+from utils import genver
 
 pubkey_descriptions = {
     'MPC_ECDSA_SECP256K1': 'MPC_ECDSA_SECP256K1 XPUB',
@@ -64,28 +64,30 @@ def main():
     
     # Set party ids for each RSA key file (allows duplicate, will get different shares+id)
     # ids shouldn't be more then 255 bits
-    parties = dict()
+    rsa_keys = dict()
+    print("Setting ids:")
     id = 1
     for f in args.RSA_keys:
         if not os.path.exists(f): 
             print(f'RSA key: {f} not found.')
             exit(-1)
         # TODO: open and read rsa_key from file
-        parties[id] = f
+        rsa_keys[id] = f
+        print(f'id: {id}\tfile: {f}')
         id += 1
-        
-    num_parties = len(parties)
+    
+    num_parties = len(rsa_keys)
 
-    # If no threshold arg, set all parties
+    # If no threshold arg, set all rsa_keys
     threshold = num_parties
     if args.threshold is not None:
         threshold = args.threshold
         if threshold > num_parties or threshold < 1:
-            print(f'Invalid threshold {threshold} for {num_parties} parties')
+            print(f'Invalid threshold {threshold} for {num_parties} rsa_keys')
             exit(-1)
 
     try:
-        bls_pubkey = generate.sample_bs12381_shares_with_verificaion(parties, threshold)
+        bls_pubkey = genver.sample_bs12381_shares_with_verificaion(rsa_keys, threshold)
     except ValueError:
         print("ValueError")
 
