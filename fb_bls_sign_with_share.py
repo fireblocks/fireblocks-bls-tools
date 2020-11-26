@@ -58,37 +58,20 @@ def query_yes_no(question, default="yes"):
 
 def main():
     parser = argparse.ArgumentParser() #formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("RSA_public_keys", type=str, nargs="+", help="space seperated list of RSA public key files")
-    parser.add_argument("-t", "--threshold", type=int, help="minimal number of shares able to reconstruct private key")
+    parser.add_argument("RSA_private_key", type=str, help="Private RSA key file")
+    parser.add_argument("BLS_key_share", type=str, help="RSA-encrypted BLS private key share file")
     args = parser.parse_args()
     
-    # Set party ids for each RSA key file (allows duplicate, will get different shares+id)
-    # ids shouldn't be more then 255 bits
-    rsa_keys = dict()
-    print("Setting ids:")
-    id = 1
-    for f in args.RSA_public_keys:
-        if not os.path.exists(f): 
-            print(f'RSA key: {f} not found.')
-            exit(-1)
-        # TODO: open and read rsa_key from file
-        rsa_keys[id] = f
-        print(f'id: {id}\tfile: {f}')
-        id += 1
-    
-    num_parties = len(rsa_keys)
+    if not os.path.exists(args.RSA_private_key): 
+        print(f'RSA key: {args.RSA_private_key} not found.')
+        exit(-1)
+    if not os.path.exists(args.BLS_key_share): 
+        print(f'RSA key: {args.BLS_key_share} not found.')
+        exit(-1) 
 
-    # If no threshold arg, set all rsa_keys
-    threshold = num_parties
-    if args.threshold is not None:
-        threshold = args.threshold
-        if threshold > num_parties or threshold < 1:
-            print(f'Invalid threshold {threshold} for {num_parties} rsa_keys')
-            exit(-1)
-    
     try:
-        bls_pubkey = genver.generate_bls12381_private_shares(rsa_keys, threshold)
-        print(f'Generated BLS public key: {bls_pubkey.hex()}')
+        genver.sign_with_share(args.RSA_private_key, args.BLS_key_share, "stam")
+        
     except ValueError:
         print("ValueError")
 
