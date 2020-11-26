@@ -38,7 +38,7 @@ class GenVerErrorRSAEncryption(GenVerErrorBasic):
 class GenVerErrorRSADecryption(GenVerErrorBasic):
     pass
 
-# bls_opt.curve_order = 7
+#bls_opt.curve_order = 7
 # Raise error if randomness is too short
 def sample_random_in_range(range:int):
     #TODO change to KeyGen with checking minimal
