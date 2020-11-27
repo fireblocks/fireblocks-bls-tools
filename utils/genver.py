@@ -23,21 +23,6 @@ class GenVerErrorBasic(Exception):
     def __str__(self):
         return f'ERROR: {self._msg}'
 
-class GenVerErrorInvalidPublicKeyReconstructed(GenVerErrorBasic):
-    pass
-
-class GenVerErrorRSAKeyImport(GenVerErrorBasic):
-    pass
-
-class GenVerErrorBLSKeyImport(GenVerErrorBasic):
-    pass
-
-class GenVerErrorRSAEncryption(GenVerErrorBasic):
-    pass
-
-class GenVerErrorRSADecryption(GenVerErrorBasic):
-    pass
-
 #bls_opt.curve_order = 7
 # Raise error if randomness is too short
 def sample_random_in_range(range:int):
@@ -122,7 +107,7 @@ def generate_bls12381_private_shares(rsa_key_files:Dict[int,str], threshold:int,
         curr_public_key = interpolate_public({id : public_shares[id] for id in auth_ids})
         print(curr_public_key)
         if not bls_opt.eq(public_key, curr_public_key):
-            raise GenVerErrorInvalidPublicKeyReconstructed(f'Invalid public key for parties {auth_ids}')
+            raise GenVerErrorBasic(f'Invalid public key for parties {auth_ids}')
     
     pubkey_address = bls_conv.G1_to_pubkey(public_key)    
     pubkey_address_hex = pubkey_address.hex()
@@ -132,7 +117,7 @@ def generate_bls12381_private_shares(rsa_key_files:Dict[int,str], threshold:int,
             rsa_key = RSA.importKey(open(rsa_key_file, 'r').read())
             cipher = PKCS1_OAEP.new(rsa_key)
         except Exception as e:
-            raise GenVerErrorRSAKeyImport(f'Reading RSA key file {rsa_key_file}')
+            raise GenVerErrorBasic(f'Reading RSA key file {rsa_key_file}')
 
         # Encode and encrypt: id, private share, (combined) public address
         plaintext = bytearray(id.to_bytes(8, byteorder="big"))
@@ -142,14 +127,14 @@ def generate_bls12381_private_shares(rsa_key_files:Dict[int,str], threshold:int,
         ciphertext = cipher.encrypt(plaintext)
         out_filename = f'id_{id}_bls_private_key_share_address_{pubkey_address_hex}.rsa_enc'
         if os.path.exists(out_filename):
-            raise GenVerErrorRSAEncryption(f'Will not write on existing file {out_filename}')
+            raise GenVerErrorBasic(f'Will not write on existing file {out_filename}')
 
         try:
             out_file = open(out_filename, "w+")
             out_file.write(f'{ciphertext.hex()}')
             out_file.close()
         except Exception as e:
-            raise GenVerErrorRSAEncryption(f'Error writing encrypted private key share for id {id}')
+            raise GenVerErrorBasic(f'Error writing encrypted private key share for id {id}')
     import math
 
     #TODO return address (instead of public key)
@@ -157,24 +142,27 @@ def generate_bls12381_private_shares(rsa_key_files:Dict[int,str], threshold:int,
 
 test_message = b'BLS MPC Signing: Fireblocks Approves This Message!'
 
-def sign_with_share(rsa_key_file, bls_key_share_file, rsa_key_pass=None):
+# Generate signature share of test_message, using bls_key (rsa encrypted with given private key, and perhapse passphrase)
+# Write verification data: id, pubkey share, pubkey address, signature share to verification file
+# Later, with threshold amount of such verificaion files, should be able to reconstruct and verity bls signature on test_message
+def sign_with_share(rsa_key_file:Sequence[str], bls_key_share_file:Sequence[str], rsa_key_pass:str=None):
     try:
         in_file = open(rsa_key_file, 'r')
         rsa_key = RSA.importKey(in_file.read(), passphrase=rsa_key_pass)
         cipher = PKCS1_OAEP.new(rsa_key)
         in_file.close()
     except ValueError:
-        raise GenVerErrorRSAKeyImport(f'Reading RSA key file {rsa_key_file}')
+        raise GenVerErrorBasic(f'Reading RSA key file {rsa_key_file}')
     
     if not rsa_key.has_private():
-        raise GenVerErrorRSAKeyImport(f'Not a private RSA key file {rsa_key_file}')
+        raise GenVerErrorBasic(f'Not a private RSA key file {rsa_key_file}')
 
     try:
         in_file = open(bls_key_share_file, "r")
         encrypted_data = bytearray.fromhex(in_file.read())
         in_file.close()
     except ValueError:
-        raise GenVerErrorBLSKeyImport(f'Reading BLS key file {bls_key_share_file}')
+        raise GenVerErrorBasic(f'Reading BLS key file {bls_key_share_file}')
 
     try:
         plaintext = cipher.decrypt(encrypted_data)
@@ -182,10 +170,13 @@ def sign_with_share(rsa_key_file, bls_key_share_file, rsa_key_pass=None):
         priv_key_share = int.from_bytes(plaintext[8:8+32], byteorder="big")
         pubkey_address = plaintext[8+32:8+32+48]
     except ValueError:
-        raise GenVerErrorRSADecryption(f'Error RSA-decrypting BLS key file {bls_key_share_file} using {rsa_key_file}')
+        raise GenVerErrorBasic(f'RSA-decrypting BLS key file {bls_key_share_file} using {rsa_key_file}')
+
+    public_key_share = bls_basic.SkToPk(priv_key_share)
 
     print(f'id: {id}')
     print(f'priv key share: {priv_key_share}')
+    print(f'public key share: {public_key_share.hex()}')
 
     test_msg = bytearray(test_message)
     test_msg.extend(pubkey_address)
@@ -194,11 +185,75 @@ def sign_with_share(rsa_key_file, bls_key_share_file, rsa_key_pass=None):
     sig_ver_file_name = f'bls_signature_verification_id_{id}_address_{pubkey_address.hex()}.txt'
     try:
         out_file = open(sig_ver_file_name, "w+")
+        out_file.write(f'{pubkey_address.hex()}\n')
+        out_file.write(f'{id}\n')
+        out_file.write(f'{public_key_share.hex()}\n')
         out_file.write(f'{signature_share.hex()}')
         out_file.close()
     except Exception as e:
-        raise GenVerErrorSignatureShare(f'Can\'t write signature share file {sig_ver_file}')
+        raise GenVerErrorBasic(f'Writing signature share file {sig_ver_file_name}')
     
+# Verify eahc threshold of signature shares from given files can reconstruct verifiable signature on test_message
+# If threshold not given, assume all files
+# Check sane pubkey in all verificaion files. If None, set from first verification file
+def verify_signature_shares(sig_share_files: Sequence[str], threhsold:int=None, public_key_address:str=None):
+    if not threhsold:
+        threhsold = len(sig_share_files)
+    
+    # convert pubkey string to group element
+    if public_key_address:
+        try:
+            pubkey = bls_conv.pubkey_to_G1(bytearray.fromhex(public_key_address))
+            bls_conv.pubkey_subgroup_check(pubkey)
+        except Exception as e:
+            raise GenVerErrorBasic(f'Invalid public key address {public_key_address}')
+
+    sig_shares = dict()
+    public_shares = dict()
+    for sig_file in sig_share_files:
+        try:
+            in_file = open(sig_file, "r")
+            in_data = in_file.read().splitlines()
+            in_file.close()
+        except Exception as e:
+            raise GenVerErrorBasic(f'Reading verificaion file {sig_file}')
+
+        # Check file's public key is same as given (or set it if n/a)
+        if not public_key_address:
+            public_key_address = in_data[0]
+
+        if public_key_address != in_data[0]:
+            raise GenVerErrorBasic(f'Different public key address in file {sig_file}')
+
+        # Get id
+        try:
+            id = int(in_data[1])
+        except ValueError:
+            raise GenVerErrorBasic(f'Invalid share id {in_data[1]} in file {sig_file}')
+        
+        if id in public_shares.keys():
+            raise GenVerErrorBasic(f'Duplicate id {id} in file {sig_file}')
+
+        curr_public_key_share = in_data[2]
+        try:
+            curr_public_G1_share = bls_conv.pubkey_to_G1(bytearray.fromhex(curr_public_key_share))
+            bls_conv.pubkey_subgroup_check(curr_public_G1_share)
+        except Exception as e:
+            raise GenVerErrorBasic(f'Invalid public key share address {curr_public_key_share} in file {sig_file}')
+        
+        public_shares[id] = curr_public_G1_share
+
+        curr_signature_share = in_data[3]
+        try:
+            curr_sig_G2_share = bls_conv.signature_to_G2(bytearray.fromhex(curr_signature_share))
+            bls_conv.subgroup_check(curr_sig_G2_share)
+        except Exception as e:
+            raise GenVerErrorBasic(f'Invalid signature share in file {sig_file}')
+        
+        sig_shares[id] = curr_sig_G2_share
+
+        # Get public key share
+
 
 #TODO verify_data(address, verification_file_list, RSA_key_file, bls_key_share_file)
     #TODO read all data in verification files (values, check same data: threshold, signature_share, public)

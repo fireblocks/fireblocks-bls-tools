@@ -58,39 +58,17 @@ def query_yes_no(question, default="yes"):
 
 def main():
     parser = argparse.ArgumentParser() #formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("RSA_public_keys", type=str, nargs="+", help="space seperated list of RSA public key files")
-    parser.add_argument("-t", "--threshold", type=int, help="minimal number of shares able to reconstruct private key")
+    parser.add_argument("verification_files",type=str,  nargs="+", help="space seperated list of signature share files generates by each party")
+    parser.add_argument("-t", "--threshold", type=int, help="minimal number of shares able to reconstruct private key (if none, assume all)")
+    parser.add_argument("-a", "--address", type=str, help="BLS public key address (if none, deduce from share files)")
     args = parser.parse_args()
     
-    # Set party ids for each RSA key file (allows duplicate, will get different shares+id)
-    # ids shouldn't be more then 255 bits
-    rsa_keys = dict()
-    print("Setting ids:")
-    id = 1
-    for f in args.RSA_public_keys:
-        if not os.path.exists(f): 
-            print(f'RSA key: {f} not found.')
+    for sig_file in args.verification_files:
+        if not os.path.exists(sig_file): 
+            print(f'Signature Share Verificaion file {sig_file} not found.')
             exit(-1)
-        # TODO: open and read rsa_key from file
-        rsa_keys[id] = f
-        print(f'id: {id}\tfile: {f}')
-        id += 1
-    
-    num_parties = len(rsa_keys)
 
-    # If no threshold arg, set all rsa_keys
-    threshold = num_parties
-    if args.threshold is not None:
-        threshold = args.threshold
-        if threshold > num_parties or threshold < 1:
-            print(f'Invalid threshold {threshold} for {num_parties} rsa_keys')
-            exit(-1)
-    
-    try:
-        bls_pubkey = genver.generate_bls12381_private_shares(rsa_keys, threshold)
-        print(f'Generated BLS public key: {bls_pubkey.hex()}')
-    except ValueError:
-        print("ValueError")
+    genver.verify_signature_shares(args.verification_files, args.threshold, args.address)
 
 if __name__ == "__main__":
     main()
