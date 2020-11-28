@@ -61,7 +61,7 @@ def sample_shares(ids: Sequence[int], threshold: int, prime:int):
 def _prime_mod_inverse(x:int, prime:int):
     return pow(x, prime-2, prime)
 
-def all_lagrange_coeff_at_point(point:int, ids:Sequence[int], prime:int):
+def _all_lagrange_coeff_at_point(point:int, ids:Sequence[int], prime:int):
     lagr = dict()
     for curr_id in ids:
         lagr[curr_id] = 1
@@ -73,22 +73,17 @@ def all_lagrange_coeff_at_point(point:int, ids:Sequence[int], prime:int):
     return lagr
 
 # Combine (interpolates) public keys using ids (from {id, pubkey} dict)
-def interpolate_public(public_shares: Dict[int,tuple]):
-    lagrange_coeff = all_lagrange_coeff_at_point(0, public_shares.keys(), bls_opt.curve_order)
-    combined_public = bls_opt.multiply(bls_opt.G1, 0)
-    for id, pub in public_shares.items():
-        combined_public = bls_opt.add(combined_public, bls_opt.multiply(pub, lagrange_coeff[id]))
+def _interpolate_in_group(group_shares:Dict[int,tuple], group_gen:tuple):
+    lagrange_coeff = _all_lagrange_coeff_at_point(0, group_shares.keys(), bls_opt.curve_order)
+    combined_group_element = bls_opt.multiply(group_gen, 0)
+    for id, gr_el in group_shares.items():
+        combined_group_element = bls_opt.add(combined_group_element, bls_opt.multiply(gr_el, lagrange_coeff[id]))
     print(lagrange_coeff)
     
-    return combined_public
-    
-#TODO public_to_address
+    return combined_group_element
 
 # parties: dict{ party_id : RSA_pub_file }
 def generate_bls12381_private_shares(rsa_key_files:Dict[int,str], threshold:int, verification_file:str = None):
-    print(rsa_key_files)
-    print(threshold)
-    print(bls_opt.curve_order)
 
     ids = list(rsa_key_files.keys())
     
@@ -98,20 +93,17 @@ def generate_bls12381_private_shares(rsa_key_files:Dict[int,str], threshold:int,
     pp.pprint(public_shares)
     
     # Generate public key from first authorized set
-    public_key = interpolate_public({ids[i] : public_shares[ids[i]] for i in range(threshold)})
-    print(public_key)
+    public_key = _interpolate_in_group({ids[i] : public_shares[ids[i]] for i in range(threshold)}, bls_opt.G1)
     
     # Verify all authorized set of keys (threshold size) generate the same public key as above
     for auth_ids in itertools.combinations(ids, threshold):
-        print(auth_ids)
-        curr_public_key = interpolate_public({id : public_shares[id] for id in auth_ids})
-        print(curr_public_key)
+        curr_public_key = _interpolate_in_group({id : public_shares[id] for id in auth_ids}, bls_opt.G1)
         if not bls_opt.eq(public_key, curr_public_key):
             raise GenVerErrorBasic(f'Invalid public key for parties {auth_ids}')
     
     pubkey_address = bls_conv.G1_to_pubkey(public_key)    
     pubkey_address_hex = pubkey_address.hex()
-    print(type(pubkey_address), len(pubkey_address))
+    
     for id, rsa_key_file in rsa_key_files.items():
         try:
             rsa_key = RSA.importKey(open(rsa_key_file, 'r').read())
@@ -140,7 +132,10 @@ def generate_bls12381_private_shares(rsa_key_files:Dict[int,str], threshold:int,
     #TODO return address (instead of public key)
     return pubkey_address
 
-test_message = b'BLS MPC Signing: Fireblocks Approves This Message!'
+def get_test_msg_for_address(pubkey_address:bytes) -> bytes:
+    test_message = bytearray(b'BLS MPC Signing: Fireblocks Approves This Message!')
+    test_message.extend(pubkey_address)
+    return bytes(test_message)
 
 # Generate signature share of test_message, using bls_key (rsa encrypted with given private key, and perhapse passphrase)
 # Write verification data: id, pubkey share, pubkey address, signature share to verification file
@@ -173,14 +168,15 @@ def sign_with_share(rsa_key_file:Sequence[str], bls_key_share_file:Sequence[str]
         raise GenVerErrorBasic(f'RSA-decrypting BLS key file {bls_key_share_file} using {rsa_key_file}')
 
     public_key_share = bls_basic.SkToPk(priv_key_share)
+    test_msg = get_test_msg_for_address(pubkey_address)
+    signature_share = bls_basic.Sign(priv_key_share, test_msg)
 
-    print(f'id: {id}')
-    print(f'priv key share: {priv_key_share}')
-    print(f'public key share: {public_key_share.hex()}')
-
-    test_msg = bytearray(test_message)
-    test_msg.extend(pubkey_address)
-    signature_share = bls_basic.Sign(priv_key_share, bytes(test_msg))
+    # print(f'Verify myself: {bls_basic.Verify(public_key_share, test_msg, signature_share)}')
+    # print(f'id: {id}')
+    # print(f'priv key share: {priv_key_share}')
+    # print(f'public key share: {public_key_share.hex()}')
+    # print(f'test_msg: {test_msg.hex()}')
+    # print(f'signature share: {signature_share.hex()}')
 
     sig_ver_file_name = f'bls_signature_verification_id_{id}_address_{pubkey_address.hex()}.txt'
     try:
@@ -193,23 +189,29 @@ def sign_with_share(rsa_key_file:Sequence[str], bls_key_share_file:Sequence[str]
     except Exception as e:
         raise GenVerErrorBasic(f'Writing signature share file {sig_ver_file_name}')
     
+def string_to_pubkey(address_string:str):
+    pubkey_address = bytes.fromhex(address_string)
+    if not bls_basic.KeyValidate(pubkey_address):
+        raise GenVerErrorBasic(f'Invalid public key adrees {address_string}')
+    return pubkey_address, bls_conv.pubkey_to_G1(pubkey_address)
+
 # Verify eahc threshold of signature shares from given files can reconstruct verifiable signature on test_message
 # If threshold not given, assume all files
 # Check sane pubkey in all verificaion files. If None, set from first verification file
-def verify_signature_shares(sig_share_files: Sequence[str], threhsold:int=None, public_key_address:str=None):
-    if not threhsold:
-        threhsold = len(sig_share_files)
+def verify_signature_shares(sig_share_files: Sequence[str], threshold:int=None, address_string:str=None):
+    if not threshold:
+        threshold = len(sig_share_files)
     
     # convert pubkey string to group element
-    if public_key_address:
+    if address_string:
         try:
-            pubkey = bls_conv.pubkey_to_G1(bytearray.fromhex(public_key_address))
-            bls_conv.pubkey_subgroup_check(pubkey)
+            pubkey_address, G1_pubkey_address = string_to_pubkey(address_string)
+            test_msg = get_test_msg_for_address(pubkey_address)
         except Exception as e:
-            raise GenVerErrorBasic(f'Invalid public key address {public_key_address}')
+            raise GenVerErrorBasic(f'Invalid public key address {address_string}')
 
-    sig_shares = dict()
-    public_shares = dict()
+    G1_public_key_shares = dict()
+    G2_signature_shares = dict()
     for sig_file in sig_share_files:
         try:
             in_file = open(sig_file, "r")
@@ -219,10 +221,15 @@ def verify_signature_shares(sig_share_files: Sequence[str], threhsold:int=None, 
             raise GenVerErrorBasic(f'Reading verificaion file {sig_file}')
 
         # Check file's public key is same as given (or set it if n/a)
-        if not public_key_address:
-            public_key_address = in_data[0]
+        if not address_string:
+            address_string = in_data[0]
+            try:
+                pubkey_address, G1_pubkey_address = string_to_pubkey(address_string)
+                test_msg = get_test_msg_for_address(pubkey_address)
+            except Exception as e:
+                raise GenVerErrorBasic(f'Invalid public key address {address_string} in file {sig_file}')
 
-        if public_key_address != in_data[0]:
+        if address_string != in_data[0]:
             raise GenVerErrorBasic(f'Different public key address in file {sig_file}')
 
         # Get id
@@ -231,33 +238,40 @@ def verify_signature_shares(sig_share_files: Sequence[str], threhsold:int=None, 
         except ValueError:
             raise GenVerErrorBasic(f'Invalid share id {in_data[1]} in file {sig_file}')
         
-        if id in public_shares.keys():
+        if id in G1_public_key_shares.keys():
             raise GenVerErrorBasic(f'Duplicate id {id} in file {sig_file}')
 
-        curr_public_key_share = in_data[2]
         try:
-            curr_public_G1_share = bls_conv.pubkey_to_G1(bytearray.fromhex(curr_public_key_share))
-            bls_conv.pubkey_subgroup_check(curr_public_G1_share)
+            curr_public_key_share, G1_public_key_shares[id] = string_to_pubkey(in_data[2])
         except Exception as e:
-            raise GenVerErrorBasic(f'Invalid public key share address {curr_public_key_share} in file {sig_file}')
+            raise GenVerErrorBasic(f'Invalid public key address share {in_data[2]} in file {sig_file}')
         
-        public_shares[id] = curr_public_G1_share
-
-        curr_signature_share = in_data[3]
         try:
-            curr_sig_G2_share = bls_conv.signature_to_G2(bytearray.fromhex(curr_signature_share))
-            bls_conv.subgroup_check(curr_sig_G2_share)
+            curr_signature_share = bytes.fromhex(in_data[3])
+            G2_signature_shares[id] = bls_conv.signature_to_G2(curr_signature_share)
+            bls_conv.subgroup_check(G2_signature_shares[id])
         except Exception as e:
             raise GenVerErrorBasic(f'Invalid signature share in file {sig_file}')
         
-        sig_shares[id] = curr_sig_G2_share
+        # Verify current sig share was signed by current public key share
+        if not bls_basic.Verify(curr_public_key_share, test_msg ,curr_signature_share):
+            raise GenVerErrorBasic(f'Failed verification of pubkey and signature share in file {sig_file}')
 
-        # Get public key share
+    if threshold > len(G1_public_key_shares):
+        raise GenVerErrorBasic(f'Should input at least threshold {threshold} unique verification files')
 
+    # For each authorized set of the above:
+    # Combine public keys and compare to address.
+    # Combine signature shares and verify
 
-#TODO verify_data(address, verification_file_list, RSA_key_file, bls_key_share_file)
-    #TODO read all data in verification files (values, check same data: threshold, signature_share, public)
-    #TODO verify my decrypted key corresponds to public one verification (if exists, if not, add)
-    #TODO verify signing with key gives signed share (if exists - if not, add)
-    #TODO for every auth group, verify same pubkey and address, join and verify signature against it
-    
+    for auth_ids in itertools.combinations(G1_public_key_shares.keys(), threshold):
+
+        G1_auth_public_key = _interpolate_in_group({id : G1_public_key_shares[id] for id in auth_ids}, bls_opt.G1)
+        if not bls_opt.eq(G1_pubkey_address, G1_auth_public_key):
+            raise GenVerErrorBasic(f'Invalid public key for parties {auth_ids}')
+        
+        G2_auth_signature = _interpolate_in_group({id : G2_signature_shares[id] for id in auth_ids}, bls_opt.G2)
+        if not bls_basic.Verify(bls_conv.G1_to_pubkey(G1_auth_public_key), test_msg ,bls_conv.G2_to_signature(G2_auth_signature)):
+            raise GenVerErrorBasic(f'Failed verification of combined signature for ids {auth_ids}')
+
+        print(f'Signature verified for ids {list(auth_ids)}')
