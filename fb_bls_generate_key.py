@@ -42,7 +42,7 @@ def main():
     
     try:
         bls_pubkey = genver.generate_bls12381_private_shares_with_verification(rsa_keys, threshold)
-        print(colored(f'Generated BLS Public Key Address: {bls_pubkey.hex()}', "green"))
+        print("Generated BLS Public Key Address:", colored(f'{bls_pubkey.hex()}', "green"))
     except ValueError:
         print("ValueError")
 

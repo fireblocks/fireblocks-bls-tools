@@ -1,7 +1,8 @@
 from py_ecc.bls import G2ProofOfPossession as bls_pop
 from py_ecc.bls import G2Basic as bls_basic
-import py_ecc.optimized_bls12_381 as bls_opt
+import py_ecc.optimized_bls12_381 as bls_curve
 import py_ecc.bls.g2_primatives as bls_conv
+from blspy import G1Element, G2Element, BasicSchemeMPL
 
 import os
 import itertools
@@ -24,7 +25,6 @@ def sample_random_in_range(range:int):
     val = bls_basic.KeyGen(secrets.token_bytes(48), b'fireblocks_bls_randomness')
     if (val < 2**100):
         raise GenVerErrorBasic(f'Suspicious randomness samples')
-    print(val % range)
     return val % range
 
 # Return shamir secret shares of value, and value also (poly at 0)
@@ -66,10 +66,10 @@ def _all_lagrange_coeff_at_point(point:int, ids:Sequence[int], prime:int):
 
 # Combine (interpolates) public keys using ids (from {id, pubkey} dict)
 def _interpolate_in_group(group_shares:Dict[int,tuple], group_gen:tuple) -> tuple:
-    lagrange_coeff = _all_lagrange_coeff_at_point(0, group_shares.keys(), bls_opt.curve_order)
-    combined_group_element = bls_opt.multiply(group_gen, 0)
+    lagrange_coeff = _all_lagrange_coeff_at_point(0, group_shares.keys(), bls_curve.curve_order)
+    combined_group_element = bls_curve.multiply(group_gen, 0)
     for id, gr_el in group_shares.items():
-        combined_group_element = bls_opt.add(combined_group_element, bls_opt.multiply(gr_el, lagrange_coeff[id]))
+        combined_group_element = bls_curve.add(combined_group_element, bls_curve.multiply(gr_el, lagrange_coeff[id]))
     
     return combined_group_element
 
@@ -83,7 +83,7 @@ def generate_bls12381_private_shares_with_verification(rsa_key_files:Dict[int,st
 
     parties_ids = list(rsa_key_files.keys())
     
-    private_key_shares, private_key = sample_shares(parties_ids, threshold, bls_opt.curve_order)
+    private_key_shares, private_key = sample_shares(parties_ids, threshold, bls_curve.curve_order)
     pubkey_address = bls_basic.SkToPk(private_key)
     public_key = bls_conv.pubkey_to_G1(pubkey_address)
     pubkey_address_shares = {id : bls_basic.SkToPk(val) for id, val in private_key_shares.items()}
@@ -91,8 +91,8 @@ def generate_bls12381_private_shares_with_verification(rsa_key_files:Dict[int,st
 
     # Verify all authorized set of keys (threshold size) generate the same public key as above
     for auth_ids in itertools.combinations(parties_ids, threshold):
-        curr_public_key = _interpolate_in_group({id : public_key_shares[id] for id in auth_ids}, bls_opt.G1)
-        if not bls_opt.eq(public_key, curr_public_key):
+        curr_public_key = _interpolate_in_group({id : public_key_shares[id] for id in auth_ids}, bls_curve.G1)
+        if not bls_curve.eq(public_key, curr_public_key):
             raise GenVerErrorBasic(f'Invalid Shamir secret sharing of public key for parties {auth_ids}')
     
     # Sign test message with each private key share
@@ -100,10 +100,11 @@ def generate_bls12381_private_shares_with_verification(rsa_key_files:Dict[int,st
     signature_shares = {id : bls_basic.Sign(val, test_msg) for id, val in private_key_shares.items()}
 
     # For public verification file, output address, num ids, threshold, all address shares and signatures
-    verification_file_suffix = f'_bls_key_verification_address_{pubkey_address.hex()}'
+    verification_file_suffix = f'bls_key_verification_address_{pubkey_address[:4].hex()}'
 
     try:
-        out_file = open("public" + verification_file_suffix + ".fireblocks", "w+")
+        verification_filename = f'public_{verification_file_suffix}.fireblocks'
+        out_file = open(verification_filename, "w+")
         out_file.write(f'{pubkey_address.hex()}\n')
         out_file.write(f'{len(parties_ids)}\n')
         out_file.write(f'{threshold}\n')
@@ -111,7 +112,9 @@ def generate_bls12381_private_shares_with_verification(rsa_key_files:Dict[int,st
             out_file.write(f'{id}\n')
             out_file.write(f'{pubkey_address_shares[id].hex()}\n')
             out_file.write(f'{signature_shares[id].hex()}\n')
+
         out_file.close()
+        print("Generated file:", colored(f'{verification_filename}', "green"))
     except:
         raise GenVerErrorBasic(f'Exporting public verification file')
     
@@ -131,7 +134,8 @@ def generate_bls12381_private_shares_with_verification(rsa_key_files:Dict[int,st
         
         # Write to file
         try:
-            out_file = open(f'id_{id}' + verification_file_suffix + ".rsa_enc.fireblocks", "w+")
+            verification_filename = f'id_{id}_{verification_file_suffix}.rsa_enc.fireblocks'
+            out_file = open(verification_filename, "w+")
             out_file.write(f'{pubkey_address.hex()}\n')
             out_file.write(f'{len(parties_ids)}\n')
             out_file.write(f'{threshold}\n')
@@ -148,6 +152,7 @@ def generate_bls12381_private_shares_with_verification(rsa_key_files:Dict[int,st
                 out_file.write(f'{signature_shares[other_id].hex()}\n')
 
             out_file.close()
+            print("Generated file:", colored(f'{verification_filename}', "green"))
         except:
             raise GenVerErrorBasic(f'Error writing encrypted private key share for id {id}')
 
@@ -248,7 +253,7 @@ def verify_signature_shares(verification_file:str, rsa_priv_key_file:str=None, r
         raise GenVerErrorBasic(f'Invalid threhsold {threshold} for ids {parties_ids}')
 
     if (len(parties_ids) != len(set(parties_ids))):
-        raise GenVerErrorBasic(f'Non-nnique ids in verification file')
+        raise GenVerErrorBasic(f'Non-unique ids in verification file')
 
     # Now, after parsing (either) verificaion file, should have the following
     # public address, threshold, all ids, public keys and signature shares.
@@ -278,13 +283,28 @@ def verify_signature_shares(verification_file:str, rsa_priv_key_file:str=None, r
 
     for auth_ids in itertools.combinations(parties_ids, threshold):
 
-        auth_pubkey_address = bls_conv.G1_to_pubkey(_interpolate_in_group({id : G1_public_key_shares[id] for id in auth_ids}, bls_opt.G1))
-        if pubkey_address == auth_pubkey_address.hex():
+        auth_pubkey_address = bls_conv.G1_to_pubkey(_interpolate_in_group({id : G1_public_key_shares[id] for id in auth_ids}, bls_curve.G1))
+        if pubkey_address != auth_pubkey_address:
             raise GenVerErrorBasic(f'Invalid public key {auth_pubkey_address.hex()} for parties {auth_ids}')
         
-        auth_signature = bls_conv.G2_to_signature(_interpolate_in_group({id : G2_signature_shares[id] for id in auth_ids}, bls_opt.G2))
-        if not bls_basic.Verify(auth_pubkey_address, test_msg , auth_signature):
+        auth_signature = bls_conv.G2_to_signature(_interpolate_in_group({id : G2_signature_shares[id] for id in auth_ids}, bls_curve.G2))
+        if not bls_basic.Verify(pubkey_address, test_msg , auth_signature):
             raise GenVerErrorBasic(f'Failed verification of combined signature for ids {auth_ids}')
+        if not BasicSchemeMPL.verify(G1Element(pubkey_address), test_msg , G2Element(auth_signature)):
+            raise GenVerErrorBasic(f'Failed verification of combined signature for ids {auth_ids} (Chia)')
     
-    print("Success!")
+    # Verify un-authorized set can't get valid signature (less then threhsold)
+    for auth_ids in itertools.combinations(parties_ids, threshold-1):
+
+        auth_pubkey_address = bls_conv.G1_to_pubkey(_interpolate_in_group({id : G1_public_key_shares[id] for id in auth_ids}, bls_curve.G1))
+        if pubkey_address == auth_pubkey_address:
+            raise GenVerErrorBasic(f'Reconstructed unauthorized public key {auth_pubkey_address.hex()} for parties {auth_ids}')
+        
+        auth_signature = bls_conv.G2_to_signature(_interpolate_in_group({id : G2_signature_shares[id] for id in auth_ids}, bls_curve.G2))
+        if bls_basic.Verify(pubkey_address, test_msg , auth_signature):
+            raise GenVerErrorBasic(f'Valid signature for unauthorized ids {auth_ids}')
+        if BasicSchemeMPL.verify(G1Element(pubkey_address), test_msg , G2Element(auth_signature)):
+            raise GenVerErrorBasic(f'Valid signature for unauthorized ids {auth_ids} (Chia)')
+
+    print(colored("Success!", "green"))
     return True
