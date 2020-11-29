@@ -1,4 +1,3 @@
-from py_ecc.bls import G2ProofOfPossession as bls_pop
 from py_ecc.bls import G2Basic as bls_basic
 import py_ecc.optimized_bls12_381 as bls_curve
 import py_ecc.bls.g2_primatives as bls_conv
@@ -244,6 +243,8 @@ def verify_signature_shares(verification_file:str, rsa_priv_key_file:str=None, r
 
         except:
             raise GenVerErrorBasic(f'Unable to parse public verification file')
+    
+    # Sanity checks
     
     parties_ids = pubkey_address_shares.keys()
     if num_parties != len(parties_ids):
