@@ -16,7 +16,6 @@ def main():
     parser.add_argument("verification_file",type=str, help="RSA encrypted BLS key verification file")
     parser.add_argument("RSA_private_key", type=str, nargs="?", help="Private RSA key file")
     parser.add_argument("--public", action="store_true", help="Public verification file, without an RSA key")
-    parser.add_argument("-a", "--address", type=str, help="BLS public key address (if none, deduce from verification file)")
     args = parser.parse_args()
     
     if (args.public and args.RSA_private_key) or (not args.public and not args.RSA_private_key):
@@ -33,7 +32,7 @@ def main():
             print(colored(f'RSA private key files {args.RSA_private_key} not found.', "cyan"))
         rsa_passphrase = getpass.getpass(prompt='Please enter RSA private key passphrase (empty for none):')
 
-    genver.verify_signature_shares(args.verification_file, args.RSA_private_key, rsa_passphrase, args.address)
+    genver.verify_signature_shares(args.verification_file, args.RSA_private_key, rsa_passphrase)
 
 if __name__ == "__main__":
     main()

@@ -1,15 +1,18 @@
 from py_ecc.bls import G2Basic as bls_basic
 import py_ecc.optimized_bls12_381 as bls_curve
 import py_ecc.bls.g2_primatives as bls_conv
-from blspy import G1Element, G2Element, BasicSchemeMPL
 
 import os
 import itertools
 import secrets
+import json
+
+from utils.derivation import *
 from typing import Sequence, Dict, Tuple
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP
 from termcolor import colored
+
 
 # Error Handling 
 
@@ -72,10 +75,27 @@ def _interpolate_in_group(group_shares:Dict[int,tuple], group_gen:tuple) -> tupl
     
     return combined_group_element
 
-def _get_test_msg_for_address(pubkey_address:bytes) -> bytes:
-    test_message = bytearray(b'BLS MPC Signing: Fireblocks Approves This Message!')
+def _get_test_msg_for_address(pubkey_address:bytes, msg:str=None) -> bytes:
+    if msg:
+        test_message = bytearray(msg)
+    else:
+        test_message = bytearray(b'BLS MPC Signing: Fireblocks Approves This Message!')
     test_message.extend(pubkey_address)
     return bytes(test_message)
+
+def _sign_derived_msg(private_key_share:int, private_chaincode_share:int, path:str, pubkey_address:bytes, chaincode_address:bytes, msg:str=None) -> bytes:
+    der_private_key = derive_private_child(private_key_share, private_chaincode_share, path, pubkey_address, chaincode_address) 
+    der_pubkey_address = bls_basic.SkToPk(der_private_key)
+    der_test_msg = _get_test_msg_for_address(pubkey_address, msg)
+    return bls_basic.Sign(der_private_key, der_test_msg)
+
+def _verify_derived_sig(signature:bytes, public_key:tuple, public_chaincode:tuple, path:str, pubkey_address:bytes, chaincode_address:bytes, msg:str=None) -> bool:
+    der_public_key = derive_public_child(public_key, public_chaincode, path, pubkey_address, chaincode_address)
+    der_pubkey_address = bls_conv.G1_to_pubkey(der_public_key)
+    der_test_msg = _get_test_msg_for_address(pubkey_address, msg)
+    return bls_basic.Verify(der_pubkey_address, der_test_msg, signature)
+
+test_path = "test/0"
 
 # parties: dict{ party_id : RSA_pub_file }
 def generate_bls12381_private_shares_with_verification(rsa_key_files:Dict[int,str], threshold:int):
@@ -85,8 +105,12 @@ def generate_bls12381_private_shares_with_verification(rsa_key_files:Dict[int,st
     private_key_shares, private_key = sample_shares(parties_ids, threshold, bls_curve.curve_order)
     pubkey_address = bls_basic.SkToPk(private_key)
     public_key = bls_conv.pubkey_to_G1(pubkey_address)
-    pubkey_address_shares = {id : bls_basic.SkToPk(val) for id, val in private_key_shares.items()}
-    public_key_shares = {id : bls_conv.pubkey_to_G1(val) for id, val in pubkey_address_shares.items()}
+    public_key_shares = {id : bls_conv.pubkey_to_G1(bls_basic.SkToPk(val)) for id, val in private_key_shares.items()}
+
+    private_chaincode_shares, private_chaincode = sample_shares(parties_ids, threshold, bls_curve.curve_order)
+    chaincode_address = bls_basic.SkToPk(private_chaincode)
+    public_chaincode = bls_conv.pubkey_to_G1(chaincode_address)
+    public_chaincode_shares = {id : bls_conv.pubkey_to_G1(bls_basic.SkToPk(val)) for id, val in private_chaincode_shares.items()}
 
     # Verify all authorized set of keys (threshold size) generate the same public key as above
     for auth_ids in itertools.combinations(parties_ids, threshold):
@@ -94,28 +118,24 @@ def generate_bls12381_private_shares_with_verification(rsa_key_files:Dict[int,st
         if not bls_curve.eq(public_key, curr_public_key):
             raise GenVerErrorBasic(f'Invalid Shamir secret sharing of public key for parties {auth_ids}')
     
-    # Sign test message with each private key share
-    test_msg = _get_test_msg_for_address(pubkey_address)
-    signature_shares = {id : bls_basic.Sign(val, test_msg) for id, val in private_key_shares.items()}
+    # Sign test message with each private key share, derived as test path
+    signature_shares = {}
+    for id in parties_ids:
+        try:
+            signature_shares = {id : _sign_derived_msg(priv, private_chaincode_shares[id], test_path, pubkey_address, chaincode_address) for id, priv in private_key_shares.items()}
+        except Exception as e:
+            raise e#GenVerErrorBasic(f'Unable to sign test message for id {id}')
 
-    # For public verification file, output address, num ids, threshold, all address shares and signatures
-    verification_file_suffix = f'bls_key_verification_address_{pubkey_address[:4].hex()}'
-
-    try:
-        verification_filename = f'public_{verification_file_suffix}.fireblocks'
-        out_file = open(verification_filename, "w+")
-        out_file.write(f'{pubkey_address.hex()}\n')
-        out_file.write(f'{len(parties_ids)}\n')
-        out_file.write(f'{threshold}\n')
-        for id in parties_ids:
-            out_file.write(f'{id}\n')
-            out_file.write(f'{pubkey_address_shares[id].hex()}\n')
-            out_file.write(f'{signature_shares[id].hex()}\n')
-
-        out_file.close()
-        print("Generated file:", colored(f'{verification_filename}', "green"))
-    except:
-        raise GenVerErrorBasic(f'Exporting public verification file')
+    # Output data to file
+    data = {}
+    data['master_public_key'] = create_master_public(public_key, public_chaincode).hex()
+    data['threshold'] = threshold
+    data['parties'] = {}
+    for id in parties_ids:
+        party = {}
+        party['master_public_key_share'] = create_master_public(public_key_shares[id], public_chaincode_shares[id]).hex()
+        party['test_signature_share'] = signature_shares[id].hex()
+        data['parties'][id] = party
     
     for id, rsa_key_file in rsa_key_files.items():
 
@@ -125,34 +145,21 @@ def generate_bls12381_private_shares_with_verification(rsa_key_files:Dict[int,st
             cipher = PKCS1_OAEP.new(rsa_key)
         except:
             raise GenVerErrorBasic(f'Reading RSA key file {rsa_key_file}')
-        
         try:
-            ciphertext = cipher.encrypt(private_key_shares[id].to_bytes(32, byteorder="big"))
+            ciphertext = cipher.encrypt(create_master_private(private_key_shares[id], private_chaincode_shares[id]))
         except:
             raise GenVerErrorBasic(f'Unable to encrypt verification data for id {id}')
-        
-        # Write to file
+
+        data['my_id'] = id
+        data['encrypted_master_private_key'] = ciphertext.hex()
+
+        verification_filename = f'id_{id}_fireblocks_bls_key_verification_{pubkey_address[:4].hex()}.json'
         try:
-            verification_filename = f'id_{id}_{verification_file_suffix}.rsa_enc.fireblocks'
-            out_file = open(verification_filename, "w+")
-            out_file.write(f'{pubkey_address.hex()}\n')
-            out_file.write(f'{len(parties_ids)}\n')
-            out_file.write(f'{threshold}\n')
-
-            # First party is encrypted one, rest come later (unencrypted, since only public values)
-            out_file.write(f'{id}\n')
-            out_file.write(f'{ciphertext.hex()}\n')
-
-            for other_id in parties_ids:
-                if other_id == id:
-                    continue
-                out_file.write(f'{other_id}\n')
-                out_file.write(f'{pubkey_address_shares[other_id].hex()}\n')
-                out_file.write(f'{signature_shares[other_id].hex()}\n')
-
-            out_file.close()
+            ver_file = open(verification_filename, 'w+')
+            json.dump(data, ver_file, indent=4)
+            ver_file.close()
             print("Generated file:", colored(f'{verification_filename}', "green"))
-        except:
+        except ValueError:
             raise GenVerErrorBasic(f'Error writing encrypted private key share for id {id}')
 
     return pubkey_address
@@ -166,30 +173,46 @@ def _hex_to_pubkey(address_hex:str):
 # Verify  threshold of signature shares from given files can reconstruct verifiable signature on test_message
 # If threshold not given, assume all files
 # Check sane pubkey in all verificaion files. If None, set from first verification file
-def verify_signature_shares(verification_file:str, rsa_priv_key_file:str=None, rsa_passphrase:str=None, address_hex:str=None):
+def verify_signature_shares(verification_file:str, rsa_priv_key_file:str=None, rsa_passphrase:str=None):
     try:
         in_file = open(verification_file, "r")
-        in_data = in_file.read().splitlines()
+        data = json.load(in_file)
         in_file.close()
     except:
         raise GenVerErrorBasic(f'Reading verificaion file {verification_file}')
 
     print(f'Parsing verification file...')
 
-    # First line of verification file is pubkey address, verify same if given
-    if not address_hex:
-        address_hex = in_data[0]
-    if in_data[0] != address_hex:
-        raise GenVerErrorBasic(f'Mismatched address with verification file')
     try:
-        pubkey_address, _ = _hex_to_pubkey(address_hex)
+        public_key, public_chaincode = parse_master_public(bytes.fromhex(data['master_public_key']))
+        threshold = data['threshold']
+        my_id = data['my_id']
+        parties = data['parties']
+        public_key_shares = {}
+        pubkey_address_shares = {}
+        public_chaincode_shares = {}
+        test_signature_shares = {}
+        parties_ids = []
+        for id_str, party in parties.items():
+            id = int(id_str)
+            parties_ids.append(id)
+            public_key_shares[id], public_chaincode_shares[id] = parse_master_public(bytes.fromhex(party['master_public_key_share']))
+            test_signature_shares[id] = bytes.fromhex(party['test_signature_share'])
+            pubkey_address_shares[id] = bls_conv.G1_to_pubkey(public_key_shares[id])
     except:
-        raise GenVerErrorBasic(f'Invalid address {address_hex}')
+        raise GenVerErrorBasic(f'Error parsing verificaion file')
 
-    test_msg = _get_test_msg_for_address(pubkey_address)
+    pubkey_address = bls_conv.G1_to_pubkey(public_key)
+    chaincode_address = bls_conv.G1_to_pubkey(public_chaincode)
 
-    if rsa_priv_key_file:
-        # Decrypt private verification file (rsa encrypted, except address above)
+    #If Given RSA file Decrypt prviate key, verify corrensponds to public key (same for chaincode)
+    decryption_verified = False
+    if rsa_priv_key_file: 
+        try:
+            encrypted_master_private_key_share = bytes.fromhex(data['encrypted_master_private_key'])
+        except:
+            raise GenVerErrorBasic(f'Error getting encrypted master private key share from file')
+
         try:
             in_file = open(rsa_priv_key_file, 'r')
             rsa_key = RSA.importKey(in_file.read(), passphrase=rsa_passphrase)
@@ -200,56 +223,24 @@ def verify_signature_shares(verification_file:str, rsa_priv_key_file:str=None, r
 
         if not rsa_key.has_private():
             raise GenVerErrorBasic(f'Not a private RSA key file {rsa_priv_key_file}')
-        
-        try:
-            num_parties = int(in_data[1])
-            threshold   = int(in_data[2])
-            my_id       = int(in_data[3])
-        except:
-            raise GenVerErrorBasic(f'Unable to parse encrypted verification file')
 
         try:
-            priv_key_share = int.from_bytes(cipher.decrypt(bytes.fromhex(in_data[4])), byteorder="big")
+            master_private_key_share = cipher.decrypt(encrypted_master_private_key_share)
         except:
             raise GenVerErrorBasic(f'Invalid decryption of private key share from verification file')
+
+        my_private_key_share, my_private_chaincode_share = parse_master_private(master_private_key_share)
+
+        my_public_key_share = bls_basic.SkToPk(my_private_key_share)
+        my_public_chaincode_share = bls_basic.SkToPk(my_private_chaincode_share)
         
-        # Set my_id priv key and signature share, then read all others from file
-        try:
-            pubkey_address_shares = {my_id : bls_basic.SkToPk(priv_key_share)}
-            signature_shares = {my_id : bls_basic.Sign(priv_key_share, test_msg)}
-        except:
-            raise GenVerErrorBasic(f'Invalid public key and signature share')
+        if not bls_conv.G1_to_pubkey(public_key_shares[my_id]) == my_public_key_share or not bls_conv.G1_to_pubkey(public_chaincode_shares[my_id]) == my_public_chaincode_share:
+            raise GenVerErrorBasic(f'Decrypted master private key shares doesn\'t correspond to public' )
         
-        try:            
-            for i in range(num_parties-1):
-                other_id = int(in_data[5+3*i])
-                pubkey_address_shares[other_id] = bytes.fromhex(in_data[6+3*i])
-                signature_shares[other_id] = bytes.fromhex(in_data[7+3*i])
-        except:
-            raise GenVerErrorBasic(f'Unable to parse other parties verification data')
-
-    else:
-        # If not given RSA private key, parse public verification file (no priv key share)
-        try:
-            num_parties = int(in_data[1])
-            threshold   = int(in_data[2])
-
-            pubkey_address_shares = dict()
-            signature_shares = dict()
-            for i in range(num_parties):
-                id = int(in_data[3+3*i])
-                pubkey_address_shares[id] = bytes.fromhex(in_data[4+3*i])
-                signature_shares[id] = bytes.fromhex(in_data[5+3*i])
-
-        except:
-            raise GenVerErrorBasic(f'Unable to parse public verification file')
+        decryption_verified = True
     
     # Sanity checks
-    
-    parties_ids = pubkey_address_shares.keys()
-    if num_parties != len(parties_ids):
-        raise GenVerErrorBasic(f'Expected {num_parties} ids, found: {parties_ids}')
-    
+
     if threshold > len(parties_ids) or threshold < 1:
         raise GenVerErrorBasic(f'Invalid threhsold {threshold} for ids {parties_ids}')
 
@@ -262,13 +253,12 @@ def verify_signature_shares(verification_file:str, rsa_priv_key_file:str=None, r
 
     # Verify al signature shares was signed by corresoponding public key share
     for id in parties_ids:
-        if not bls_basic.Verify(pubkey_address_shares[id], test_msg ,signature_shares[id]):
+        if not _verify_derived_sig(test_signature_shares[id], public_key_shares[id], public_chaincode_shares[id], test_path, pubkey_address, chaincode_address):
             raise GenVerErrorBasic(f'Failed verification of pubkey and signature share for id {id}')
 
     # Convert to group elements to allow interpolation
     try:
-        G1_public_key_shares = {id : bls_conv.pubkey_to_G1(val) for id, val in pubkey_address_shares.items()}
-        G2_signature_shares = {id : bls_conv.signature_to_G2(val) for id, val in signature_shares.items()}
+        G2_signature_shares = {id : bls_conv.signature_to_G2(val) for id, val in test_signature_shares.items()}
     except:
         raise GenVerErrorBasic('Invalid encoding of public address and signature shares')
 
@@ -280,32 +270,47 @@ def verify_signature_shares(verification_file:str, rsa_priv_key_file:str=None, r
     # Combine signature shares and verify
 
     print(f'Done.')
-    print(f'Verifying signing threshold {threshold} out of {num_parties} parties...')
-
+    print(f'Verifying signing threshold {threshold} out of {len(parties_ids)} parties...')
+    if not decryption_verified:
+        print(colored('without verifing private key share', "red"))
+    
     for auth_ids in itertools.combinations(parties_ids, threshold):
 
-        auth_pubkey_address = bls_conv.G1_to_pubkey(_interpolate_in_group({id : G1_public_key_shares[id] for id in auth_ids}, bls_curve.G1))
+        auth_pubkey_address = bls_conv.G1_to_pubkey(_interpolate_in_group({id : public_key_shares[id] for id in auth_ids}, bls_curve.G1))
         if pubkey_address != auth_pubkey_address:
             raise GenVerErrorBasic(f'Invalid public key {auth_pubkey_address.hex()} for parties {auth_ids}')
         
         auth_signature = bls_conv.G2_to_signature(_interpolate_in_group({id : G2_signature_shares[id] for id in auth_ids}, bls_curve.G2))
-        if not bls_basic.Verify(pubkey_address, test_msg , auth_signature):
+        if not _verify_derived_sig(auth_signature, public_key, public_chaincode, test_path, pubkey_address, chaincode_address):
             raise GenVerErrorBasic(f'Failed verification of combined signature for ids {auth_ids}')
-        if not BasicSchemeMPL.verify(G1Element(pubkey_address), test_msg , G2Element(auth_signature)):
-            raise GenVerErrorBasic(f'Failed verification of combined signature for ids {auth_ids} (Chia)')
     
     # Verify un-authorized set can't get valid signature (less then threhsold)
     for auth_ids in itertools.combinations(parties_ids, threshold-1):
 
-        auth_pubkey_address = bls_conv.G1_to_pubkey(_interpolate_in_group({id : G1_public_key_shares[id] for id in auth_ids}, bls_curve.G1))
+        auth_pubkey_address = bls_conv.G1_to_pubkey(_interpolate_in_group({id : public_key_shares[id] for id in auth_ids}, bls_curve.G1))
         if pubkey_address == auth_pubkey_address:
             raise GenVerErrorBasic(f'Reconstructed unauthorized public key {auth_pubkey_address.hex()} for parties {auth_ids}')
         
         auth_signature = bls_conv.G2_to_signature(_interpolate_in_group({id : G2_signature_shares[id] for id in auth_ids}, bls_curve.G2))
-        if bls_basic.Verify(pubkey_address, test_msg , auth_signature):
+        if _verify_derived_sig(auth_signature, public_key, public_chaincode, test_path, pubkey_address, chaincode_address):
             raise GenVerErrorBasic(f'Valid signature for unauthorized ids {auth_ids}')
-        if BasicSchemeMPL.verify(G1Element(pubkey_address), test_msg , G2Element(auth_signature)):
-            raise GenVerErrorBasic(f'Valid signature for unauthorized ids {auth_ids} (Chia)')
 
     print(colored("Success!", "green"))
     return True
+
+def get_derived_address(verification_file:str, path) -> bytes:
+    try:
+        in_file = open(verification_file, "r")
+        data = json.load(in_file)
+        in_file.close()
+    except:
+        raise GenVerErrorBasic(f'Reading verificaion file {verification_file}')
+
+    try:
+        public_key, public_chaincode = parse_master_public(bytes.fromhex(data['master_public_key']))
+    except:
+        raise GenVerErrorBasic(f'Error parsing verificaion file')
+
+    # TODO: verify data signature!
+
+    return bls_conv.G1_to_pubkey(derive_public_child(public_key, public_chaincode, path))
