@@ -26,85 +26,118 @@ def _hash_to_bls_field(data:bytes) -> int:
 
     return result
 
-def _derivation_format_bytes(public_root_address:bytes, chaincode_address:bytes, path:str) -> bytes:
-    return public_root_address + chaincode_address + bytes(path, 'utf-8') + b'fb_bls_key_derivation'
+def _derivation_format_hash_input(root_public_address:bytes, public_chaincode_address:bytes, path:bytes) -> bytes:
+    return root_public_address + public_chaincode_address + path + b'fb_bls_key_derivation'
 
-def parse_master_private(master_private_key:bytes) -> Tuple[int, int]:
-    if not len(master_private_key) == 64:
-        raise DerivationErrorBasic(f'Wrong length master private key, got {len(master_private_key)}, should be 64')
+def index_to_path(index:int) -> bytes:
+    return bytes(f'm/{index}/', 'utf-8')
+
+def parse_master_private_key(master_private_key:bytes) -> Tuple[int, int]:
+    if not len(master_private_key) == 70:
+        raise DerivationErrorBasic(f'Wrong length master private key, got {len(master_private_key)}, should be 70')
+    
+    checksum = master_private_key[64:70]
+    if sha512(master_private_key[:64]).digest()[:6] != checksum:
+        raise DerivationErrorBasic(f'Wrong master private key checksum')
+
     try:
         private_root = int.from_bytes(master_private_key[:32], byteorder="big")
-        private_chaincode = int.from_bytes(master_private_key[32:], byteorder="big")
+        private_chaincode = int.from_bytes(master_private_key[32:64], byteorder="big")
     except:
-        raise DerivationErrorBasic(f'Parsing master private key')
+        raise DerivationErrorBasic(f'Parsing master private key to private root key and chaincode')
 
     if (private_root >= bls_curve.curve_order):
-        raise DerivationErrorBasic(f'Private root out of curve order')
+        raise DerivationErrorBasic(f'Private root above curve order')
     
     if (private_chaincode >= bls_curve.curve_order):
-        raise DerivationErrorBasic(f'Private chaincode out of curve order')
+        raise DerivationErrorBasic(f'Private chaincode above curve order')
     
     return private_root, private_chaincode
 
-def create_master_private(private_root:int, private_chaincode:int) -> bytes:
+def get_master_private_key(private_root:int, private_chaincode:int) -> bytes:
     if (private_root >= bls_curve.curve_order):
-        raise DerivationErrorBasic(f'Private root out of curve order')
+        raise DerivationErrorBasic(f'Private root key above curve order')
 
     if (private_chaincode >= bls_curve.curve_order):
-        raise DerivationErrorBasic(f'Private chaincode out of curve order')
+        raise DerivationErrorBasic(f'Private chaincode above curve order')
 
-    return private_root.to_bytes(32, byteorder="big") + private_chaincode.to_bytes(32, byteorder="big")
+    joint = private_root.to_bytes(32, byteorder="big") + private_chaincode.to_bytes(32, byteorder="big")
+    return joint + sha512(joint).digest()[:6]
 
-def parse_master_public(master_public_key:bytes) -> Tuple[tuple,tuple]:
-    if not len(master_public_key) == 96:
-        raise DerivationErrorBasic(f'Wrong length master public key too short, got {len(master_public_key)} bytes, should be 96')
+def parse_master_pubkey(master_pubkey:bytes) -> Tuple[tuple,tuple]:
+    if not len(master_pubkey) == 102:
+        raise DerivationErrorBasic(f'Wrong length master public key too short, got {len(master_pubkey)} bytes, should be 102')
+    
+    checksum = master_pubkey[96:102]
+    if sha512(master_pubkey[:96]).digest()[:6] != checksum:
+        raise DerivationErrorBasic(f'Wrong master public key checksum')
 
-    if not bls_basic.KeyValidate(master_public_key[:48]):
+    if not bls_basic.KeyValidate(master_pubkey[:48]):
         raise DerivationErrorBasic('Parsing master public key')
-    if not bls_basic.KeyValidate(master_public_key[48:]):
+    if not bls_basic.KeyValidate(master_pubkey[48:96]):
         raise DerivationErrorBasic('Parsing master public chaincode')
     
     try:
-        root_G1 = bls_conv.pubkey_to_G1(master_public_key[:48])
-        chaincode_G1 = bls_conv.pubkey_to_G1(master_public_key[48:])
+        root_public_key = bls_conv.pubkey_to_G1(master_pubkey[:48])
+        public_chaincode = bls_conv.pubkey_to_G1(master_pubkey[48:96])
     except:
-        raise DerivationErrorBasic('Parsing master public root')
+        raise DerivationErrorBasic('Parsing master public to root public key and chaincode')
 
-    return root_G1, chaincode_G1
+    return root_public_key, public_chaincode
 
-def create_master_public(root_G1:tuple, chaincode_G1:tuple) -> bytes:
-    root_pubkey =  bls_conv.G1_to_pubkey(root_G1)
-    chaincode_pubkey = bls_conv.G1_to_pubkey(chaincode_G1)
+def get_master_pubkey(root_G1:tuple, chaincode_G1:tuple) -> bytes:
+    try:
+        root_pubkey = bls_conv.G1_to_pubkey(root_G1)
+        public_chaincode_address = bls_conv.G1_to_pubkey(chaincode_G1)
+    except:
+        raise DerivationErrorBasic('Encoding master public key')
 
     if not bls_basic.KeyValidate(root_pubkey):
-        raise DerivationErrorBasic('Parsing master public key')
-    if not bls_basic.KeyValidate(chaincode_pubkey):
-        raise DerivationErrorBasic('Parsing master public chaincode')
+        raise DerivationErrorBasic('Encoding public root key')
 
-    return root_pubkey + chaincode_pubkey
+    if not bls_basic.KeyValidate(public_chaincode_address):
+        raise DerivationErrorBasic('Encoding public root chaincode')
 
-def derive_private_child(private_key_share:int, private_chaincode_share:int, path:str, pubkey_address:bytes=None, chaincode_address:bytes=None) -> int:    
-    if not pubkey_address:
-        pubkey_address = bls_basic.SkToPk(private_key_share)
-        chaincode_address = bls_basic.SkToPk(private_chaincode_share)
+    joint = root_pubkey + public_chaincode_address 
+    return joint + sha512(joint).digest()[:6]
+
+# If master_pubkey is None, derive it from master_private_key
+def derive_private_child(master_private_key_share:bytes, path:bytes, master_pubkey:bytes = None) -> int:
+    root_private_key_share, root_private_chaincode_share = parse_master_private_key(master_private_key_share)
     
-    h = _hash_to_bls_field(_derivation_format_bytes(pubkey_address, chaincode_address, path)) 
-    derived_private = (private_key_share + private_chaincode_share * h) % bls_curve.curve_order
+    if master_pubkey: 
+        root_public_key, root_public_chaincode = parse_master_pubkey(master_pubkey)
+        root_pubkey_address = bls_conv.G1_to_pubkey(root_public_key)
+        public_chaincode_address = bls_conv.G1_to_pubkey(root_public_chaincode)
+    else:
+        root_pubkey_address = bls_basic.SkToPk(root_private_key_share)
+        public_chaincode_address = bls_basic.SkToPk(root_private_chaincode_share)
+    
+    h = _hash_to_bls_field(_derivation_format_hash_input(root_pubkey_address, public_chaincode_address, path)) 
+    derived_private = (root_private_key_share + root_private_chaincode_share * h) % bls_curve.curve_order
     
     return derived_private
 
-def derive_public_child(public_key_share:tuple, public_chaincode_share:tuple, path:str, pubkey_address:bytes=None, chaincode_address:bytes=None) -> tuple:
-    if not pubkey_address:
-        pubkey_address = bls_conv.G1_to_pubkey(public_key_share)
-        chaincode_address = bls_conv.G1_to_pubkey(public_chaincode_share)
+# If master_pubkey is None, set as share
+def derive_public_child(master_pubkey_share:bytes, path:bytes, master_pubkey:bytes = None) -> tuple:
+    if not master_pubkey:
+        master_pubkey = master_pubkey_share
+        
+    root_public_key, root_public_chaincode = parse_master_pubkey(master_pubkey)
+    root_pubkey_address = bls_conv.G1_to_pubkey(root_public_key)
+    public_chaincode_address = bls_conv.G1_to_pubkey(root_public_chaincode)
+    h = _hash_to_bls_field(_derivation_format_hash_input(root_pubkey_address, public_chaincode_address, path)) 
 
-    h = _hash_to_bls_field(_derivation_format_bytes(pubkey_address, chaincode_address, path)) 
+    public_key_share, public_chaincode_share = parse_master_pubkey(master_pubkey_share)
     return bls_curve.add(public_key_share, bls_curve.multiply(public_chaincode_share, h))
 
-def test(path:str):
+def test(path_str:str):
+    path = bytes(path_str, 'utf-8')
+
     x = random.randrange(bls_curve.curve_order)
     a = random.randrange(bls_curve.curve_order)
-    x_path = derive_private_child(x, a, path)
+    master_priv = get_master_private_key(x, a)
+    x_path = derive_private_child(master_priv, path)
 
     print(f'x      = {x}')
     print(f'a      = {a}')
@@ -112,7 +145,9 @@ def test(path:str):
 
     X = bls_curve.multiply(bls_curve.G1, x)
     A = bls_curve.multiply(bls_curve.G1, a)
-    X_path = derive_public_child(X, A, path)
+    master_pubkey = get_master_pubkey(X, A)
+
+    X_path = derive_public_child(master_pubkey, path)
 
     print(f'X      = {bls_conv.G1_to_pubkey(X).hex()}')
     print(f'A      = {bls_conv.G1_to_pubkey(A).hex()}')

@@ -13,10 +13,16 @@ from utils import genver
 def main():
     parser = argparse.ArgumentParser() #formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("RSA_public_keys", type=str, nargs="+", help="space seperated list of RSA public key files")
-    parser.add_argument("-t", "--threshold", type=int, help="minimal number of shares able to reconstruct private key (if none, assume all)")
+    parser.add_argument("--threshold", type=int, help="minimal number of shares able to reconstruct private key", required=True)
     args = parser.parse_args()
-    
-    # Set party ids for each RSA key file (allows duplicate, will get different shares+id)
+
+    # Get passphrase for integrity check
+    master_pubkey_integrity_passphrase = ""
+    while len(master_pubkey_integrity_passphrase) < 8:
+        master_pubkey_integrity_passphrase = getpass.getpass(prompt='Please enter BLS public key integrity passphrase (minimum 8 characters):')
+
+
+    # Set party ids for each RSA key file (allows duplicate, will get different sahres id)
     # ids shouldn't be more then 255 bits
     rsa_keys = dict()
     print("Setting ids:")
@@ -31,20 +37,13 @@ def main():
         id += 1
     
     num_parties = len(rsa_keys)
+    threshold = args.threshold
 
-    # If no threshold arg, set all rsa_keys
-    threshold = num_parties
-    if args.threshold is not None:
-        threshold = args.threshold
-        if threshold > num_parties or threshold < 1:
-            print(colored(f'Invalid threshold {threshold} for {num_parties} rsa_keys', "cyan"))
-            exit(-1)
-    
-    try:
-        bls_pubkey = genver.generate_bls12381_private_shares_with_verification(rsa_keys, threshold)
-        print("Generated BLS Public Key Address:", colored(f'{bls_pubkey.hex()}', "green"))
-    except ValueError:
-        print("ValueError")
+    if threshold > num_parties or threshold < 1:
+        print(colored(f'Invalid threshold {threshold} for {num_parties} rsa_keys', "cyan"))
+        exit(-1)
+
+    genver.generate_bls_key_shares_with_verification(rsa_keys, threshold, master_pubkey_integrity_passphrase)
 
 if __name__ == "__main__":
     main()
