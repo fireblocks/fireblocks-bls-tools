@@ -66,7 +66,7 @@ def get_master_private_key(private_root:int, private_chaincode:int) -> bytes:
 
 def parse_master_pubkey(master_pubkey:bytes) -> Tuple[tuple,tuple]:
     if not len(master_pubkey) == 102:
-        raise DerivationErrorBasic(f'Wrong length master public key too short, got {len(master_pubkey)} bytes, should be 102')
+        raise DerivationErrorBasic(f'Wrong length master public key, got {len(master_pubkey)} bytes, should be 102')
     
     checksum = master_pubkey[96:102]
     if sha512(master_pubkey[:96]).digest()[:6] != checksum:

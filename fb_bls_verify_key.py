@@ -27,9 +27,10 @@ def main():
             print(colored(f'RSA private key files {args.RSA_private_key} not found.', "cyan"))
         passphrase = getpass.getpass(prompt='Please enter RSA private key passphrase:')
     else:
-        passphrase = getpass.getpass(prompt='Please enter VLS public key integrity passphrase:')
+        passphrase = getpass.getpass(prompt='Please enter BLS public key integrity passphrase:')
 
-    genver.verify_key_file(args.key_file, passphrase, args.RSA_private_key)
+
+    genver.verify_key_file(args.key_file, passphrase, args.RSA_private_key)    
 
 if __name__ == "__main__":
     main()
