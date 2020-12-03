@@ -2,6 +2,8 @@ from py_ecc.bls import G2Basic as bls_basic
 import py_ecc.optimized_bls12_381 as bls_curve
 import py_ecc.bls.g2_primatives as bls_conv
 
+#from blspy import (G1Element, G2Element, BasicSchemeMPL)
+
 import os
 import itertools
 import secrets
@@ -84,16 +86,23 @@ def _get_msg_for_address(pubkey_address:bytes, msg:str=None) -> Tuple[bytes,str]
     test_message = test_message + "_" + pubkey_address.hex()
     return bytes(test_message, 'ascii'), test_message
 
-def _sign_msg_with_derived_key(master_private_key_share:bytes, path:bytes, master_pubkey:bytes, msg:str=None) -> bytes:
+def _sign_msg_with_derived_key(master_private_key_share:bytes, path:bytes, master_pubkey:bytes, msg:str=None, augment:bool=True) -> bytes:
     der_private_key_share = derive_private_child(master_private_key_share, path, master_pubkey) 
     der_pubkey_address = bls_conv.G1_to_pubkey(derive_public_child(master_pubkey, path))
-    der_test_msg, _ = _get_msg_for_address(der_pubkey_address, msg)
+    if augment:
+        der_test_msg, _ = _get_msg_for_address(der_pubkey_address, msg)
+    else:
+        der_test_msg = bytes(msg,'ascii')
     return bls_basic.Sign(der_private_key_share, der_test_msg)
 
-def _verify_signature_with_derived_key(signature:bytes, master_pubkey_share:bytes, path:bytes, master_pubkey:bytes=None, msg:str=None) -> bool:
+def _verify_signature_with_derived_key(signature:bytes, master_pubkey_share:bytes, path:bytes, master_pubkey:bytes=None, msg:str=None, augment:bool=True) -> bool:
     der_public_key = derive_public_child(master_pubkey_share, path, master_pubkey)
     der_pubkey_address = bls_conv.G1_to_pubkey(der_public_key)
-    der_test_msg, _ = _get_msg_for_address(der_pubkey_address, msg)
+    
+    if augment:
+        der_test_msg, _ = _get_msg_for_address(der_pubkey_address, msg)
+    else:
+        der_test_msg = bytes(msg, 'ascii')
     return bls_basic.Verify(der_pubkey_address, der_test_msg, signature)
 
 def _compute_scrypt_checksum(scrypt_key:bytes, salt_to_hash:bytes) -> bytes:
@@ -354,7 +363,7 @@ def derive_address_and_sign(key_file:str, derivation_index:int, passphrase:str, 
         out_data['signer_id'] = my_id
         out_data['message'] = msg_str
         out_data['derivation_index'] = derivation_index
-        out_data['signature'] = _sign_msg_with_derived_key(master_private_key_share, der_path, master_pubkey, msg_str).hex()
+        out_data['signature'] = _sign_msg_with_derived_key(master_private_key_share, der_path, master_pubkey, msg_str, False).hex()
         
         # Write to file
         sig_filename = f'id_{my_id}_bls_signature_share_{sha512(msg_bytes).digest()[:4].hex()}_{derived_pubkey_address[:4].hex()}_index_{derivation_index}.json'
@@ -434,10 +443,18 @@ def verify_signature_files(signature_files:Sequence[str], threshold:int=None) ->
     print("Public Key:", colored(derived_pubkey_address.hex(), "green"))
     
     auth_signature = None
+    msg_bytes = bytes(msg_str, "ascii")
     for auth_ids in itertools.combinations(parties_ids, threshold):
         auth_signature = bls_conv.G2_to_signature(_interpolate_in_group({id : G2_signature_shares[id] for id in auth_ids}, bls_curve.G2))
-        if not _verify_signature_with_derived_key(auth_signature, master_pubkey, der_path, master_pubkey, msg_str):
+        if not _verify_signature_with_derived_key(auth_signature, master_pubkey, der_path, master_pubkey, msg_str, False):
             raise GenVerErrorBasic(f'Failed verification of combined signature for ids {auth_ids}')
+        
+        if not bls_basic.Verify(derived_pubkey_address, msg_bytes, auth_signature):
+            raise GenVerErrorBasic(f'Failed verification of combined signature for id {auth_ids}.')
+        
+        # if not BasicSchemeMPL.verify(G1Element(derived_pubkey_address), msg_bytes , G2Element(auth_signature)):
+        #     raise GenVerErrorBasic(f'Failed verification of combined signature for ids {auth_ids} (Chia)')
+    
     print("Signature:", colored(auth_signature.hex(), "green"))
     print(colored("Success!", "green"))
     
