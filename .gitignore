@@ -3,3 +3,4 @@
 utils/__pycache__/genver.cpython-38.pyc
 *.json
 keys/*
+temp.py
