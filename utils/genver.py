@@ -76,24 +76,24 @@ def _interpolate_in_group(group_shares:Dict[int,tuple], group_gen:tuple) -> tupl
     
     return combined_group_element
 
-def _get_test_msg_for_address(pubkey_address:bytes, msg:str=None) -> bytes:
+def _get_msg_for_address(pubkey_address:bytes, msg:str=None) -> Tuple[bytes,str]:
     if msg:
-        test_message = bytearray(msg)
+        test_message = msg
     else:
-        test_message = bytearray(b'BLS MPC Signing: Fireblocks Approves This Message!')
-    test_message.extend(pubkey_address)
-    return bytes(test_message)
+        test_message = 'BLS MPC Signing: Fireblocks Approves This Message!'
+    test_message = test_message + "_" + pubkey_address.hex()
+    return bytes(test_message, 'ascii'), test_message
 
 def _sign_msg_with_derived_key(master_private_key_share:bytes, path:bytes, master_pubkey:bytes, msg:str=None) -> bytes:
     der_private_key_share = derive_private_child(master_private_key_share, path, master_pubkey) 
     der_pubkey_address = bls_conv.G1_to_pubkey(derive_public_child(master_pubkey, path))
-    der_test_msg = _get_test_msg_for_address(der_pubkey_address, msg)
+    der_test_msg, _ = _get_msg_for_address(der_pubkey_address, msg)
     return bls_basic.Sign(der_private_key_share, der_test_msg)
 
 def _verify_signature_with_derived_key(signature:bytes, master_pubkey_share:bytes, path:bytes, master_pubkey:bytes=None, msg:str=None) -> bool:
     der_public_key = derive_public_child(master_pubkey_share, path, master_pubkey)
     der_pubkey_address = bls_conv.G1_to_pubkey(der_public_key)
-    der_test_msg = _get_test_msg_for_address(der_pubkey_address, msg)
+    der_test_msg, _ = _get_msg_for_address(der_pubkey_address, msg)
     return bls_basic.Verify(der_pubkey_address, der_test_msg, signature)
 
 def _compute_scrypt_checksum(scrypt_key:bytes, salt_to_hash:bytes) -> bytes:
@@ -282,13 +282,13 @@ def verify_key_file(key_file:str, passphrase:str, rsa_priv_key_file:str=None):
     
     for auth_ids in itertools.combinations(parties_ids, threshold):
         auth_signature = bls_conv.G2_to_signature(_interpolate_in_group({id : G2_signature_shares[id] for id in auth_ids}, bls_curve.G2))
-        if not _verify_signature_with_derived_key(auth_signature, master_pubkey, test_path):
+        if not _verify_signature_with_derived_key(auth_signature, master_pubkey, _get_test_path()):
             raise GenVerErrorBasic(f'Failed verification of combined signature for ids {auth_ids}')
     
     # Verify un-authorized set can't get valid signature (less then threhsold)
     for auth_ids in itertools.combinations(parties_ids, threshold-1):        
         auth_signature = bls_conv.G2_to_signature(_interpolate_in_group({id : G2_signature_shares[id] for id in auth_ids}, bls_curve.G2))
-        if _verify_signature_with_derived_key(auth_signature, master_pubkey, test_path):
+        if _verify_signature_with_derived_key(auth_signature, master_pubkey, _get_test_path()):
             raise GenVerErrorBasic(f'Valid signature for unauthorized ids {auth_ids}')
 
     print(colored("Success!", "green"))
@@ -345,27 +345,29 @@ def derive_address_and_sign(key_file:str, derivation_index:int, passphrase:str, 
     
     der_path = index_to_path(derivation_index)
     derived_public_key = derive_public_child(master_pubkey, der_path)
+    derived_pubkey_address = bls_conv.G1_to_pubkey(derived_public_key)
 
     out_data = {}
     if sign_msg:
-        msg_bytes = bytes(sign_msg, 'utf-8')
+        msg_bytes, msg_str = _get_msg_for_address(derived_pubkey_address, sign_msg)
         out_data['master_pubkey'] = master_pubkey.hex()
         out_data['signer_id'] = my_id
-        out_data['message'] = sign_msg
+        out_data['message'] = msg_str
         out_data['derivation_index'] = derivation_index
-        out_data['signature'] = _sign_msg_with_derived_key(master_private_key_share, der_path, master_pubkey, msg_bytes).hex()
+        out_data['signature'] = _sign_msg_with_derived_key(master_private_key_share, der_path, master_pubkey, msg_str).hex()
         
         # Write to file
-        sig_filename = f'id_{my_id}_bls_signature_{master_pubkey[:4].hex()}_index_{derivation_index}.json'
+        sig_filename = f'id_{my_id}_bls_signature_share_{sha512(msg_bytes).digest()[:4].hex()}_{derived_pubkey_address[:4].hex()}_index_{derivation_index}.json'
         try:
             sig_file = open(sig_filename, 'w+')
             json.dump(out_data, sig_file, indent=4)
             sig_file.close()
-            print("Generated file:", colored(f'{sig_filename}', "green"))
+            print("Message:", colored(f'{msg_str}', "green"))
+            print("Generated Signature File:", colored(f'{sig_filename}', "green"))
         except ValueError:
             raise GenVerErrorBasic(f'Error writing signature file for id {id}')
 
-    return bls_conv.G1_to_pubkey(derived_public_key).hex()
+    return derived_pubkey_address.hex()
 
 def verify_signature_files(signature_files:Sequence[str], threshold:int=None) -> bool:
     parties_ids = []
@@ -425,14 +427,18 @@ def verify_signature_files(signature_files:Sequence[str], threshold:int=None) ->
         threshold = len(parties_ids)
 
     der_path = index_to_path(derivation_index)
-    msg = bytes(msg_str, 'utf-8')
+    derived_pubkey_address = bls_conv.G1_to_pubkey(derive_public_child(master_pubkey, der_path))
     
-    print(f'Verifying signing threshold {threshold} out of {len(parties_ids)} parties...')
-
+    print(f'Verifying signing threshold {threshold} out of {len(parties_ids)} parties')
+    print("Message:", colored(msg_str, "green"))
+    print("Public Key:", colored(derived_pubkey_address.hex(), "green"))
+    
+    auth_signature = None
     for auth_ids in itertools.combinations(parties_ids, threshold):
         auth_signature = bls_conv.G2_to_signature(_interpolate_in_group({id : G2_signature_shares[id] for id in auth_ids}, bls_curve.G2))
-        if not _verify_signature_with_derived_key(auth_signature, master_pubkey, der_path, master_pubkey, msg):
+        if not _verify_signature_with_derived_key(auth_signature, master_pubkey, der_path, master_pubkey, msg_str):
             raise GenVerErrorBasic(f'Failed verification of combined signature for ids {auth_ids}')
-    
+    print("Signature:", colored(auth_signature.hex(), "green"))
     print(colored("Success!", "green"))
+    
     return True
