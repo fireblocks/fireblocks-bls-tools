@@ -156,6 +156,9 @@ def generate_bls_key_shares_with_verification(rsa_key_files:Dict[int,str], thres
         except:
             raise GenVerErrorBasic(f'Reading RSA key file {rsa_key_file}')
 
+        if rsa_key.n.bit_length() < 4096:
+            GenVerErrorBasic(f'RSA key is too short: {rsa_key.n.bit_length()}, should be at least 4096 bits')
+
         try:
             encrypted_master_private_key_shares[id] = cipher.encrypt(master_private_key_shares[id])
             encrypted_integrity_passphrase[id] = cipher.encrypt(integrity_passphrase)

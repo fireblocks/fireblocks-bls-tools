@@ -13,7 +13,7 @@ from utils import genver
 def main():
     parser = argparse.ArgumentParser() #formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("RSA_public_keys", type=str, nargs="+", help="space seperated list of RSA public key files")
-    parser.add_argument("--threshold", type=int, help="minimal number of shares able to reconstruct private key", required=True)
+    parser.add_argument("-t", "--threshold", type=int, help="minimal number of shares able to reconstruct private key", required=True)
     args = parser.parse_args()
 
     # Get passphrase for integrity check
