@@ -35,7 +35,9 @@ def main():
 
         passphrase = getpass.getpass(prompt='Please enter BLS public key integrity passphrase:')
 
-    print("Generated Address:", colored(genver.derive_address_and_sign(args.key_file, args.index, passphrase, args.RSA, args.sign_msg), "green"))
+    derived_pubkey_address, derived_withdrawal_credentials = genver.derive_address_and_sign(args.key_file, args.index, passphrase, args.RSA, args.sign_msg)
+    print("Generated Address:", colored(derived_pubkey_address, "green"))
+    print("Withdrawl Credentials:", colored(derived_withdrawal_credentials, "green"))
 
 if __name__ == "__main__":
     main()

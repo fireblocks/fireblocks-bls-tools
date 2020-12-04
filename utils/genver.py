@@ -14,7 +14,7 @@ from typing import Sequence, Dict, Tuple
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP
 from termcolor import colored
-from hashlib import scrypt,sha512
+from hashlib import scrypt, sha512, sha256
 
 
 # Error Handling 
@@ -306,6 +306,11 @@ def verify_key_file(key_file:str, passphrase:str, rsa_priv_key_file:str=None):
     print(colored("Success!", "green"))
     return True
 
+def _withdrawal_credentials(withdrawal_pubkey_address:bytes) -> bytes:
+        withdrawal_credentials = bytes.fromhex('00')
+        withdrawal_credentials += sha256(withdrawal_pubkey_address).digest()[1:]
+        return withdrawal_credentials
+
 # pessphrase and rsa_key relation as above
 def derive_address_and_sign(key_file:str, derivation_index:int, passphrase:str, rsa_priv_key_file:str=None, sign_msg:str=None) -> str:
     try:
@@ -379,7 +384,7 @@ def derive_address_and_sign(key_file:str, derivation_index:int, passphrase:str, 
         except ValueError:
             raise GenVerErrorBasic(f'Error writing signature file for id {id}')
 
-    return derived_pubkey_address.hex()
+    return derived_pubkey_address.hex(), _withdrawal_credentials(derived_pubkey_address).hex()
 
 def verify_signature_files(signature_files:Sequence[str], threshold:int=None) -> bool:
     parties_ids = []
