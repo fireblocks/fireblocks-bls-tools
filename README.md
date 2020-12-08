@@ -2,8 +2,8 @@
 
 ## Installation
 
-* `git clone https://github.com/fireblocks/fb_bls12381_key_tool.git`
-* `cd fb_bls12381_key_tool`
+* `git clone https://github.com/fireblocks/fireblocks-bls-tools.git`
+* `cd fireblocks-bls-tools`
 
 ### Prerequisites
 
