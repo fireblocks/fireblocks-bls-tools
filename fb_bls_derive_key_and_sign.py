@@ -16,7 +16,7 @@ def main():
     parser.add_argument("key_file",type=str, help="BLS key verification file")
     parser.add_argument("--index",type=int, help="derivation index", required=True)
     parser.add_argument("--RSA",type=str, help="Private RSA key file")
-    parser.add_argument("--sign_msg", type=str, help="Sign hex/str message (with private key share)")
+    parser.add_argument("--sign_msg", type=str, help="Sign message (hex or string) with private key share")
     parser.add_argument("--hex", action='store_true', help="Message is hex encoded, signed as bytes")
     args = parser.parse_args()
     
@@ -44,7 +44,6 @@ def main():
         passphrase = getpass.getpass(prompt='Please enter BLS public key integrity passphrase:')
 
     genver.derive_address_and_sign(args.key_file, args.index, passphrase, args.RSA, args.sign_msg, args.hex)
-    
 
 if __name__ == "__main__":
     main()

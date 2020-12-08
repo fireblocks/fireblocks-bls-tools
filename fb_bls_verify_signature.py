@@ -12,7 +12,7 @@ from termcolor import colored
 from utils import genver
 
 def main():
-    parser = argparse.ArgumentParser() #formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser = argparse.ArgumentParser()
     parser.add_argument("BLS_signature_files", type=str, nargs="+", help="space seperated list generated BLS signature files")
     parser.add_argument("-t", "--threshold", type=int, help="check with any subset of this size (if none, check only all)")
     args = parser.parse_args()

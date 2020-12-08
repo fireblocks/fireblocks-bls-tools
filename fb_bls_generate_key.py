@@ -22,8 +22,7 @@ def main():
         master_pubkey_integrity_passphrase = getpass.getpass(prompt='Please enter BLS public key integrity passphrase (minimum 8 characters):')
 
 
-    # Set party ids for each RSA key file (allows duplicate, will get different sahres id)
-    # ids shouldn't be more then 255 bits
+    # Set party ids for each RSA key file (allows duplicates, each will get different share id)
     rsa_keys = dict()
     print("Setting ids:")
     id = 1
@@ -31,7 +30,6 @@ def main():
         if not os.path.exists(f): 
             print(f'RSA key: {f} not found.')
             exit(-1)
-        # TODO: open and read rsa_key from file
         rsa_keys[id] = f
         print(f'id: {id}\tfile: {f}')
         id += 1

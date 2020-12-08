@@ -2,8 +2,6 @@ from py_ecc.bls import G2Basic as bls_basic
 import py_ecc.optimized_bls12_381 as bls_curve
 import py_ecc.bls.g2_primatives as bls_conv
 
-# from blspy import G1Element, G2Element, BasicSchemeMPL
-
 import os
 import itertools
 import secrets
@@ -31,7 +29,7 @@ def _sample_random_in_range(range:int):
         raise GenVerErrorBasic(f'Suspicious randomness samples')
     return val % range
 
-# Return shamir secret shares of value, and value also (poly at 0)
+# Return shamir secret shares of value, and also secret value (poly at 0)
 def _sample_shares(ids: Sequence[int], threshold:int) -> Tuple[int, int]:
     
     if len(ids) != len(set(ids)):
@@ -45,14 +43,13 @@ def _sample_shares(ids: Sequence[int], threshold:int) -> Tuple[int, int]:
     for i in range(0, threshold):
         poly_coeff[i] = _sample_random_in_range(bls_curve.curve_order)
 
-    # Evaluate (horner's method) on each id
+    # Evaluate (Horner's method) on each id
     shares = {id : poly_coeff[threshold-1] for id in ids}
     for i in range(threshold-2, -1, -1):
         for id in shares.keys():
             shares[id] = (shares[id]*id + poly_coeff[i]) % bls_curve.curve_order
 
     return shares, poly_coeff[0]
-
 
 def _prime_mod_inverse(x:int, prime:int):
     return pow(x, prime-2, prime)
@@ -77,6 +74,7 @@ def _interpolate_in_group(group_shares:Dict[int,tuple], group_gen:tuple) -> tupl
     
     return combined_group_element
 
+# Concatenate pubkey_address string to msg (default msg if not given)
 def _get_msg_for_address(pubkey_address:bytes, msg:str=None) -> Tuple[bytes,str]:
     if msg:
         test_message = msg
@@ -92,7 +90,7 @@ def _compute_scrypt_checksum(scrypt_key:bytes, salt_to_hash:bytes) -> bytes:
 def _get_test_path():
     return b'test/0'
 
-# parties: dict{ party_id : RSA_pub_file }
+# RSA_key_files: dict{ party_id : RSA_pub_file }
 def generate_bls_key_shares_with_verification(rsa_key_files:Dict[int,str], threshold:int, integrity_passphrase:str):
 
     parties_ids = list(rsa_key_files.keys())
@@ -128,7 +126,7 @@ def generate_bls_key_shares_with_verification(rsa_key_files:Dict[int,str], thres
         except:
             raise GenVerErrorBasic(f'Unable to sign test message for id {id}')
     
-    # Scrypt checksum of public key - to avoid manipulation
+    # Scrypt checksum of public key - to avoid manipulation and brute-force
     integrity_passphrase = bytes(integrity_passphrase,'utf-8')
     scrypt_checksum = _compute_scrypt_checksum(integrity_passphrase, master_pubkey)
 
@@ -183,8 +181,8 @@ def generate_bls_key_shares_with_verification(rsa_key_files:Dict[int,str], thres
 
     return master_pubkey
 
-# Verify threshold of signature shares from given files can reconstruct verifiable signature on test_message
-# passphrase is either for integrity checksum or RSA private key (which derived integrity checksum)
+# Verify threshold of signature shares of test message existing in the key_file
+# passphrase is either for integrity checksum or RSA private key (which decrypts integrity checksum)
 def verify_key_file(key_file:str, passphrase:str, rsa_priv_key_file:str=None):
     try:
         in_file = open(key_file, "r")
@@ -262,14 +260,13 @@ def verify_key_file(key_file:str, passphrase:str, rsa_priv_key_file:str=None):
         if not test_signature_shares[my_id] == bls_basic.Sign(derived_private_key_share, test_msg):
             raise GenVerErrorBasic(f'Modified signature share for my key id {my_id}')
     else:
-        print(colored('No RSA key - did not verify private key share validity!', "cyan"))
+        print(colored('No RSA key - not verifying private key share validity!', "cyan"))
     
     # After getting scrypt integrity passphrase validate master pubkey wasn't changed
     computed_checksum = _compute_scrypt_checksum(integrity_passphrase, master_pubkey)
 
     if not computed_checksum == integrity_checksum:
         raise GenVerErrorBasic(f'Failure in validating master public key integrity checksum (perhaps wrong passphrase)')
-
 
     # Convert to group elements to allow interpolation of signatures
     G2_signature_shares = {}
@@ -279,9 +276,7 @@ def verify_key_file(key_file:str, passphrase:str, rsa_priv_key_file:str=None):
         except:
             raise GenVerErrorBasic(f'Invalid encoding of signature shares for id {id}')
 
-    # For each authorized set of the above:
-    # Combine public keys and compare to address.
-    # Combine signature shares and verify
+    # For each authorized set of the above, combine signature shares and verify
 
     print(f'Verifying signing threshold {threshold} out of {len(parties_ids)} parties...')
     
@@ -290,7 +285,7 @@ def verify_key_file(key_file:str, passphrase:str, rsa_priv_key_file:str=None):
         if not  bls_basic.Verify(derived_pubkey_address, test_msg, auth_signature):
             raise GenVerErrorBasic(f'Failed verification of combined signature for ids {auth_ids}')
     
-    # Verify un-authorized set can't get valid signature (less then threhsold)
+    # Sanity check: check un-authorized set can't get valid signature (less then threhsold) 
     for auth_ids in itertools.combinations(parties_ids, threshold-1):        
         auth_signature = bls_conv.G2_to_signature(_interpolate_in_group({id : G2_signature_shares[id] for id in auth_ids}, bls_curve.G2))
         if bls_basic.Verify(derived_pubkey_address, test_msg, auth_signature):
@@ -324,7 +319,7 @@ def derive_address_and_sign(key_file:str, derivation_index:int, passphrase:str, 
     except:
         raise GenVerErrorBasic(f'Error parsing key file')
 
-    # If Given RSA private key, use it to get integrity passphrase (if no file, assume integrity passphrase is given)
+    # If Given RSA private key, use it to decrypt integrity passphrase (if no file, assume integrity passphrase is given)
     if rsa_priv_key_file is None:
         integrity_passphrase = bytes(passphrase, 'utf-8')
     else: 
@@ -345,7 +340,10 @@ def derive_address_and_sign(key_file:str, derivation_index:int, passphrase:str, 
             raise GenVerErrorBasic(f'Invalid decryption of integrity passphrase from key file')
 
         if sign_msg:
-            master_private_key_share = cipher.decrypt(encrypted_private_key_share)
+            try:
+                master_private_key_share = cipher.decrypt(encrypted_private_key_share)
+            except:
+                raise GenVerErrorBasic(f'Invalid decryption of BLS private key share')
 
     # After getting scrypt integrity passphrase validate master pubkey wasn't changed
     computed_checksum = _compute_scrypt_checksum(integrity_passphrase, master_pubkey)
@@ -353,10 +351,13 @@ def derive_address_and_sign(key_file:str, derivation_index:int, passphrase:str, 
     if not computed_checksum == integrity_checksum:
         raise GenVerErrorBasic(f'Failure in validating master public key integrity checksum (perhaps wrong passphrase)')
     
+    # Derive address at index
+    
     derivation_path = index_to_path(derivation_index)
     derived_public_key = derive_public_child(master_pubkey, derivation_path)
     derived_pubkey_address = bls_conv.G1_to_pubkey(derived_public_key)
 
+    # Sign message (and write to file) if given
     out_data = {}
     if sign_msg:
         derived_private_key_share = derive_private_child(master_private_key_share, derivation_path, master_pubkey)
@@ -389,6 +390,9 @@ def derive_address_and_sign(key_file:str, derivation_index:int, passphrase:str, 
     return
 
 def verify_signature_files(signature_files:Sequence[str], threshold:int=None) -> bool:
+    
+    # Get data from signature share file
+    
     parties_ids = []
     signature_shares = {}
     master_pubkey = None
@@ -461,18 +465,13 @@ def verify_signature_files(signature_files:Sequence[str], threshold:int=None) ->
     print("Message:", colored(msg_str, "green"))
     print("Public Key:", colored(derived_pubkey_address.hex(), "green"))
     
-    auth_signature = None
+    # Verify joining threshold singature shares gives a valid signature
+    auth_signature = b''
     for auth_ids in itertools.combinations(parties_ids, threshold):
         auth_signature = bls_conv.G2_to_signature(_interpolate_in_group({id : G2_signature_shares[id] for id in auth_ids}, bls_curve.G2))
 
         if not bls_basic.Verify(derived_pubkey_address, msg_bytes, auth_signature):
-            print(f'Derived PubKey: {derived_pubkey_address.hex()}')
-            print(f'Signature: {auth_signature.hex()}')
-            print(f'Message Hex: {msg_bytes.hex()}')
             raise GenVerErrorBasic(f'Failed verification of combined signature for id {auth_ids}.')
-        
-        # if not BasicSchemeMPL.verify(G1Element(derived_pubkey_address), msg_bytes , G2Element(auth_signature)):
-        #     raise GenVerErrorBasic(f'Failed verification of combined signature for ids {auth_ids} (Chia)')
     
     print("Signature:", colored(auth_signature.hex(), "green"))
     print(colored("Success!", "green"))

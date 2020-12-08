@@ -2,4 +2,3 @@ pytest
 pycryptodome
 termcolor==1.1.0
 py_ecc
-blspy

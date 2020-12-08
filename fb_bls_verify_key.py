@@ -12,7 +12,7 @@ from termcolor import colored
 from utils import genver
 
 def main():
-    parser = argparse.ArgumentParser() #formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser = argparse.ArgumentParser()
     parser.add_argument("key_file",type=str, help="RSA encrypted BLS key file")
     parser.add_argument("--RSA", type=str, nargs="?", help="RSA private key file")
     args = parser.parse_args()
@@ -28,7 +28,6 @@ def main():
         passphrase = getpass.getpass(prompt='Please enter RSA private key passphrase:')
     else:
         passphrase = getpass.getpass(prompt='Please enter BLS public key integrity passphrase:')
-
 
     genver.verify_key_file(args.key_file, passphrase, args.RSA)    
 
