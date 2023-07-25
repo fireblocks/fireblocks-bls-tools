@@ -1,4 +1,4 @@
-from py_ecc.bls import G2Basic as bls_basic
+from py_ecc.bls import G2ProofOfPossession as bls_basic
 import py_ecc.optimized_bls12_381 as bls_curve
 import py_ecc.bls.g2_primatives as bls_conv
 
